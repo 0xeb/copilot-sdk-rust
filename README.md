@@ -18,10 +18,6 @@ This is an **unofficial** Rust port of the upstream SDKs.
 - GitHub Copilot CLI installed and authenticated
 - `copilot` available in `PATH`, or set `COPILOT_CLI_PATH` to the CLI executable/script
 
-## Status
-
-Work in Progress - Not yet implemented.
-
 ## Related Projects
 
 | Project | Language | Description |
