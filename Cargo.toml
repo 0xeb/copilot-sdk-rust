@@ -37,7 +37,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 
 # Executable finding
-which = "7"
+which = "8"
 
 schemars = { version = "0.8", optional = true, features = ["derive"] }
 
