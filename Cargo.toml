@@ -39,7 +39,7 @@ tracing = "0.1"
 # Executable finding
 which = "7"
 
-schemars = { version = "0.8", optional = true, features = ["derive"] }
+schemars = { version = "1.2", optional = true, features = ["derive"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
