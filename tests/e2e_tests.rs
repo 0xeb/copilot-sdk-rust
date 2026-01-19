@@ -586,6 +586,13 @@ async fn test_custom_tool_invocation() {
         response
     );
 
+    // Verify tool arguments were actually passed (regression test for parameters field name)
+    let key_value = received_key.lock().await;
+    assert!(
+        !key_value.is_empty(),
+        "Tool arguments should have been passed - received empty key.          This may indicate the tool schema field name is wrong (should be 'parameters', not 'parametersSchema')"
+    );
+
     client.stop().await.expect("Failed to stop client");
 }
 
