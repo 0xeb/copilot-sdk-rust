@@ -1,12 +1,10 @@
 # copilot-sdk-rust
 
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)](https://github.com/0xeb/copilot-sdk-rust)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)](https://github.com/copilot-community-sdk/copilot-sdk-rust)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B%20(Edition%202024)-orange)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Rust SDK for interacting with the GitHub Copilot CLI agent runtime (JSON-RPC over stdio or TCP).
-
-> **Note:** This is a placeholder repository. Implementation is not yet available.
 
 This is an **unofficial** Rust port of the upstream SDKs.
 
@@ -22,9 +20,9 @@ This is an **unofficial** Rust port of the upstream SDKs.
 
 | Project | Language | Description |
 |---------|----------|-------------|
-| [copilot-sdk-cpp](https://github.com/0xeb/copilot-sdk-cpp) | C++ | C++ SDK for Copilot CLI |
-| [claude-agent-sdk-cpp](https://github.com/0xeb/claude-agent-sdk-cpp) | C++ | C++ SDK for Claude Agent |
-| [claude-agent-sdk-dotnet](https://github.com/0xeb/claude-agent-sdk-dotnet) | C# | .NET SDK for Claude Agent |
+| [copilot-sdk-cpp](https://github.com/copilot-community-sdk/copilot-sdk-cpp) | C++ | C++ SDK for Copilot CLI |
+| [claude-agent-sdk-cpp](https://github.com/copilot-community-sdk/claude-agent-sdk-cpp) | C++ | C++ SDK for Claude Agent |
+| [claude-agent-sdk-dotnet](https://github.com/copilot-community-sdk/claude-agent-sdk-dotnet) | C# | .NET SDK for Claude Agent |
 
 ## License
 
