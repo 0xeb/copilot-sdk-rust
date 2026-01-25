@@ -46,6 +46,58 @@ async fn main() -> copilot_sdk::Result<()> {
 }
 ```
 
+## Features
+
+### Infinite Sessions
+
+Automatic context window management that compacts conversation history when approaching token limits:
+
+```rust
+let config = SessionConfig {
+    infinite_sessions: Some(InfiniteSessionConfig::enabled()),
+    ..Default::default()
+};
+```
+
+### Custom Tools
+
+Register tools that the assistant can invoke:
+
+```rust
+session.register_tool_with_handler(
+    Tool::builder("get_weather", "Get current weather")
+        .string_param("city", "City name", true)
+        .build(),
+    |invocation| async move {
+        let city: String = invocation.arg("city")?;
+        Ok(ToolResult::text(format!("Weather in {}: Sunny, 72°F", city)))
+    },
+).await;
+```
+
+### Client Utilities
+
+```rust
+let status = client.get_status().await?;       // CLI version info
+let auth = client.get_auth_status().await?;    // Authentication state
+let models = client.list_models().await?;      // Available models
+```
+
+### BYOK (Bring Your Own Key)
+
+Use your own API keys with compatible providers:
+
+```rust
+let config = SessionConfig {
+    provider: Some(ProviderConfig {
+        base_url: Some("https://api.openai.com/v1".into()),
+        api_key: Some("sk-...".into()),
+        ..Default::default()
+    }),
+    ..Default::default()
+};
+```
+
 ## Examples
 
 ```bash
