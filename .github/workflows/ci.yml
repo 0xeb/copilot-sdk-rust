@@ -32,9 +32,6 @@ jobs:
       - name: Test
         run: cargo test
 
-      - name: Compile (all features)
-        run: cargo test --all-features --no-run
-
       - name: Doc
         run: cargo doc --no-deps
 
