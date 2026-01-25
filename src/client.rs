@@ -11,8 +11,9 @@ use crate::jsonrpc::{StdioJsonRpcClient, TcpJsonRpcClient};
 use crate::process::{CopilotProcess, ProcessOptions};
 use crate::session::Session;
 use crate::types::{
-    ClientOptions, ConnectionState, LogLevel, PingResponse, ResumeSessionConfig,
-    SDK_PROTOCOL_VERSION, SessionConfig, SessionMetadata,
+    ClientOptions, ConnectionState, GetAuthStatusResponse, GetStatusResponse, LogLevel, ModelInfo,
+    PingResponse, ProviderConfig, ResumeSessionConfig, SDK_PROTOCOL_VERSION, SessionConfig,
+    SessionMetadata,
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -587,8 +588,16 @@ impl Client {
     // =========================================================================
 
     /// Create a new Copilot session.
-    pub async fn create_session(&self, config: SessionConfig) -> Result<Arc<Session>> {
+    pub async fn create_session(&self, mut config: SessionConfig) -> Result<Arc<Session>> {
         self.ensure_connected().await?;
+
+        // Apply BYOK from environment if enabled and not explicitly set
+        if config.auto_byok_from_env && config.model.is_none() {
+            config.model = ProviderConfig::model_from_env();
+        }
+        if config.auto_byok_from_env && config.provider.is_none() {
+            config.provider = ProviderConfig::from_env();
+        }
 
         // Build the request
         let params = serde_json::to_value(&config)?;
@@ -603,8 +612,16 @@ impl Client {
             .ok_or_else(|| CopilotError::Protocol("Missing sessionId in response".into()))?
             .to_string();
 
+        // Extract workspace_path (for infinite sessions)
+        let workspace_path = result
+            .get("workspacePath")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         // Create session object
-        let session = self.create_session_object(session_id.clone()).await;
+        let session = self
+            .create_session_object(session_id.clone(), workspace_path)
+            .await;
 
         // Store session
         self.sessions
@@ -619,18 +636,18 @@ impl Client {
     pub async fn resume_session(
         &self,
         session_id: &str,
-        config: ResumeSessionConfig,
+        mut config: ResumeSessionConfig,
     ) -> Result<Arc<Session>> {
         self.ensure_connected().await?;
 
+        // Apply BYOK from environment if enabled and not explicitly set
+        if config.auto_byok_from_env && config.provider.is_none() {
+            config.provider = ProviderConfig::from_env();
+        }
+
         // Build the request
-        let params = json!({
-            "sessionId": session_id,
-            "tools": config.tools,
-            "provider": config.provider,
-            "mcpServers": config.mcp_servers,
-            "customAgents": config.custom_agents,
-        });
+        let mut params = serde_json::to_value(&config)?;
+        params["sessionId"] = json!(session_id);
 
         // Send the request
         let result = self.invoke("session.resume", Some(params)).await?;
@@ -642,8 +659,16 @@ impl Client {
             .unwrap_or(session_id)
             .to_string();
 
+        // Extract workspace_path (for infinite sessions)
+        let workspace_path = result
+            .get("workspacePath")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         // Create session object
-        let session = self.create_session_object(resumed_id.clone()).await;
+        let session = self
+            .create_session_object(resumed_id.clone(), workspace_path)
+            .await;
 
         // Store session
         self.sessions
@@ -673,7 +698,21 @@ impl Client {
         self.ensure_connected().await?;
 
         let params = json!({ "sessionId": session_id });
-        self.invoke("session.delete", Some(params)).await?;
+        let result = self.invoke("session.delete", Some(params)).await?;
+
+        if let Some(success) = result.get("success").and_then(|v| v.as_bool()) {
+            if !success {
+                let msg = result
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown error")
+                    .to_string();
+                return Err(CopilotError::Protocol(format!(
+                    "Failed to delete session: {}",
+                    msg
+                )));
+            }
+        }
 
         // Remove from local cache
         self.sessions.write().await.remove(session_id);
@@ -719,6 +758,41 @@ impl Client {
                 .and_then(|v| v.as_u64())
                 .map(|v| v as u32),
         })
+    }
+
+    /// Get CLI status including version and protocol information.
+    pub async fn get_status(&self) -> Result<GetStatusResponse> {
+        self.ensure_connected().await?;
+
+        let result = self.invoke("status.get", None).await?;
+        serde_json::from_value(result)
+            .map_err(|e| CopilotError::Protocol(format!("Failed to parse status response: {}", e)))
+    }
+
+    /// Get current authentication status.
+    pub async fn get_auth_status(&self) -> Result<GetAuthStatusResponse> {
+        self.ensure_connected().await?;
+
+        let result = self.invoke("auth.getStatus", None).await?;
+        serde_json::from_value(result).map_err(|e| {
+            CopilotError::Protocol(format!("Failed to parse auth status response: {}", e))
+        })
+    }
+
+    /// List available models with their metadata.
+    ///
+    /// # Errors
+    /// Returns an error if not authenticated or if the request fails.
+    pub async fn list_models(&self) -> Result<Vec<ModelInfo>> {
+        self.ensure_connected().await?;
+
+        let result = self.invoke("models.list", None).await?;
+        let models = result
+            .get("models")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([]));
+        serde_json::from_value(models)
+            .map_err(|e| CopilotError::Protocol(format!("Failed to parse models response: {}", e)))
     }
 
     // =========================================================================
@@ -977,7 +1051,11 @@ impl Client {
     }
 
     /// Create a session object with the invoke function.
-    async fn create_session_object(&self, session_id: String) -> Arc<Session> {
+    async fn create_session_object(
+        &self,
+        session_id: String,
+        workspace_path: Option<String>,
+    ) -> Arc<Session> {
         let rpc = Arc::clone(&self.rpc);
 
         // Create the invoke function that captures the RPC client
@@ -992,7 +1070,7 @@ impl Client {
             }) as crate::session::InvokeFuture
         };
 
-        Arc::new(Session::new(session_id, invoke_fn))
+        Arc::new(Session::new(session_id, workspace_path, invoke_fn))
     }
 }
 

@@ -118,6 +118,8 @@ struct SessionState {
 pub struct Session {
     /// Session ID.
     session_id: String,
+    /// Workspace path for infinite sessions.
+    workspace_path: Option<String>,
     /// Event broadcaster.
     event_tx: broadcast::Sender<SessionEvent>,
     /// Session state.
@@ -130,7 +132,7 @@ impl Session {
     /// Create a new session.
     ///
     /// This is typically called by the Client when creating a session.
-    pub fn new<F>(session_id: String, invoke_fn: F) -> Self
+    pub fn new<F>(session_id: String, workspace_path: Option<String>, invoke_fn: F) -> Self
     where
         F: Fn(&str, Option<Value>) -> InvokeFuture + Send + Sync + 'static,
     {
@@ -138,6 +140,7 @@ impl Session {
 
         Self {
             session_id,
+            workspace_path,
             event_tx,
             state: Arc::new(RwLock::new(SessionState {
                 tools: HashMap::new(),
@@ -156,6 +159,14 @@ impl Session {
     /// Get the session ID.
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// Get the workspace path for infinite sessions.
+    ///
+    /// Contains checkpoints/, plan.md, and files/ subdirectories.
+    /// Returns None if infinite sessions are disabled.
+    pub fn workspace_path(&self) -> Option<&str> {
+        self.workspace_path.as_deref()
     }
 
     // =========================================================================
@@ -217,6 +228,7 @@ impl Session {
             "sessionId": self.session_id,
             "prompt": options.prompt,
             "attachments": options.attachments,
+            "mode": options.mode,
         });
 
         let result = (self.invoke_fn)("session.send", Some(params)).await?;
@@ -247,14 +259,26 @@ impl Session {
         let result = (self.invoke_fn)("session.getMessages", Some(params)).await?;
 
         let events: Vec<SessionEvent> = result
-            .get("messages")
+            .get("events")
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
                     .filter_map(|v| SessionEvent::from_json(v).ok())
                     .collect()
             })
-            .unwrap_or_default();
+            .or_else(|| {
+                result
+                    .get("messages")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| SessionEvent::from_json(v).ok())
+                            .collect()
+                    })
+            })
+            .ok_or_else(|| {
+                CopilotError::Protocol("Missing events in getMessages response".into())
+            })?;
 
         Ok(events)
     }
@@ -420,15 +444,42 @@ mod tests {
         Box::pin(async { Ok(serde_json::json!({"messageId": "test-msg-123"})) })
     }
 
+    fn mock_invoke_with_events(method: &str, _params: Option<Value>) -> InvokeFuture {
+        let method = method.to_string();
+        Box::pin(async move {
+            if method == "session.getMessages" {
+                return Ok(serde_json::json!({
+                    "events": [{
+                        "id": "evt-1",
+                        "timestamp": "2024-01-01T00:00:00Z",
+                        "type": "session.idle",
+                        "data": {}
+                    }]
+                }));
+            }
+            Ok(serde_json::json!({"messageId": "test-msg-123"}))
+        })
+    }
+
     #[tokio::test]
     async fn test_session_id() {
-        let session = Session::new("test-session-123".to_string(), mock_invoke);
+        let session = Session::new("test-session-123".to_string(), None, mock_invoke);
         assert_eq!(session.session_id(), "test-session-123");
     }
 
     #[tokio::test]
+    async fn test_workspace_path() {
+        let session = Session::new(
+            "test".to_string(),
+            Some("/tmp/workspace".to_string()),
+            mock_invoke,
+        );
+        assert_eq!(session.workspace_path(), Some("/tmp/workspace"));
+    }
+
+    #[tokio::test]
     async fn test_register_tool() {
-        let session = Session::new("test".to_string(), mock_invoke);
+        let session = Session::new("test".to_string(), None, mock_invoke);
 
         let tool = Tool::new("my_tool").description("A test tool");
 
@@ -441,7 +492,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_tool_with_handler() {
-        let session = Session::new("test".to_string(), mock_invoke);
+        let session = Session::new("test".to_string(), None, mock_invoke);
 
         let tool = Tool::new("echo").description("Echo tool");
         let handler: ToolHandler = Arc::new(|_name, args| {
@@ -463,7 +514,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invoke_unknown_tool() {
-        let session = Session::new("test".to_string(), mock_invoke);
+        let session = Session::new("test".to_string(), None, mock_invoke);
 
         let result = session.invoke_tool("unknown", &serde_json::json!({})).await;
 
@@ -472,7 +523,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_event_subscription() {
-        let session = Session::new("test".to_string(), mock_invoke);
+        let session = Session::new("test".to_string(), None, mock_invoke);
 
         let mut sub1 = session.subscribe();
         let mut sub2 = session.subscribe();
@@ -498,7 +549,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_callback_handler() {
-        let session = Session::new("test".to_string(), mock_invoke);
+        let session = Session::new("test".to_string(), None, mock_invoke);
         let call_count = Arc::new(AtomicUsize::new(0));
 
         let count_clone = Arc::clone(&call_count);
@@ -527,7 +578,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_handler() {
-        let session = Session::new("test".to_string(), mock_invoke);
+        let session = Session::new("test".to_string(), None, mock_invoke);
 
         // Default handler denies
         let request = PermissionRequest {
@@ -545,5 +596,16 @@ mod tests {
 
         let result = session.handle_permission_request(&request).await;
         assert_eq!(result.kind, "approved");
+    }
+
+    #[tokio::test]
+    async fn test_get_messages_with_events_field() {
+        let session = Session::new("test".to_string(), None, mock_invoke_with_events);
+        let messages = session.get_messages().await.unwrap();
+        assert_eq!(messages.len(), 1);
+        assert!(matches!(
+            messages[0].data,
+            crate::events::SessionEventData::SessionIdle(_)
+        ));
     }
 }

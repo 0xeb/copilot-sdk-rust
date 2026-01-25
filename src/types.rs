@@ -7,12 +7,16 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 // =============================================================================
 // Protocol Version
 // =============================================================================
 
 /// SDK protocol version - must match copilot-agent-runtime server.
-pub const SDK_PROTOCOL_VERSION: u32 = 1;
+pub const SDK_PROTOCOL_VERSION: u32 = 2;
 
 // =============================================================================
 // Enums
@@ -241,6 +245,66 @@ pub struct ProviderConfig {
     pub azure: Option<AzureOptions>,
 }
 
+// Environment variable names for BYOK configuration
+impl ProviderConfig {
+    /// Environment variable for API key
+    pub const ENV_API_KEY: &'static str = "COPILOT_SDK_BYOK_API_KEY";
+    /// Environment variable for base URL
+    pub const ENV_BASE_URL: &'static str = "COPILOT_SDK_BYOK_BASE_URL";
+    /// Environment variable for provider type
+    pub const ENV_PROVIDER_TYPE: &'static str = "COPILOT_SDK_BYOK_PROVIDER_TYPE";
+    /// Environment variable for model
+    pub const ENV_MODEL: &'static str = "COPILOT_SDK_BYOK_MODEL";
+
+    /// Check if BYOK environment variables are configured.
+    ///
+    /// Returns true if `COPILOT_SDK_BYOK_API_KEY` is set and non-empty.
+    pub fn is_env_configured() -> bool {
+        std::env::var(Self::ENV_API_KEY)
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+    }
+
+    /// Load ProviderConfig from `COPILOT_SDK_BYOK_*` environment variables.
+    ///
+    /// Returns `Some(ProviderConfig)` if API key is set, `None` otherwise.
+    ///
+    /// Environment variables:
+    /// - `COPILOT_SDK_BYOK_API_KEY` (required): API key for the provider
+    /// - `COPILOT_SDK_BYOK_BASE_URL` (optional): Base URL (defaults to OpenAI)
+    /// - `COPILOT_SDK_BYOK_PROVIDER_TYPE` (optional): Provider type (defaults to "openai")
+    pub fn from_env() -> Option<Self> {
+        if !Self::is_env_configured() {
+            return None;
+        }
+
+        let api_key = std::env::var(Self::ENV_API_KEY).ok();
+        let base_url = std::env::var(Self::ENV_BASE_URL)
+            .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+        let provider_type = std::env::var(Self::ENV_PROVIDER_TYPE)
+            .ok()
+            .or_else(|| Some("openai".to_string()));
+
+        Some(Self {
+            base_url,
+            provider_type,
+            api_key,
+            wire_api: None,
+            bearer_token: None,
+            azure: None,
+        })
+    }
+
+    /// Load model from `COPILOT_SDK_BYOK_MODEL` environment variable.
+    ///
+    /// Returns `Some(model)` if set and non-empty, `None` otherwise.
+    pub fn model_from_env() -> Option<String> {
+        std::env::var(Self::ENV_MODEL)
+            .ok()
+            .filter(|v| !v.is_empty())
+    }
+}
+
 // =============================================================================
 // MCP Server Configuration
 // =============================================================================
@@ -294,7 +358,7 @@ pub enum McpServerConfig {
 // =============================================================================
 
 /// Configuration for a custom agent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CustomAgentConfig {
     pub name: String,
@@ -427,8 +491,50 @@ impl Serialize for Tool {
         let mut state = serializer.serialize_struct("Tool", 3)?;
         state.serialize_field("name", &self.name)?;
         state.serialize_field("description", &self.description)?;
-        state.serialize_field("parameters", &self.parameters_schema)?;
+        state.serialize_field("parametersSchema", &self.parameters_schema)?;
         state.end()
+    }
+}
+
+// =============================================================================
+// Infinite Session Configuration
+// =============================================================================
+
+/// Configuration for infinite sessions (automatic context compaction).
+///
+/// When enabled, the SDK will automatically manage conversation context to prevent
+/// buffer exhaustion. Thresholds are expressed as fractions (0.0 to 1.0).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InfiniteSessionConfig {
+    /// Enable infinite sessions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Threshold for background compaction (0.0 to 1.0).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background_compaction_threshold: Option<f64>,
+    /// Threshold for buffer exhaustion handling (0.0 to 1.0).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub buffer_exhaustion_threshold: Option<f64>,
+}
+
+impl InfiniteSessionConfig {
+    /// Create an enabled infinite session config with default thresholds.
+    pub fn enabled() -> Self {
+        Self {
+            enabled: Some(true),
+            background_compaction_threshold: None,
+            buffer_exhaustion_threshold: None,
+        }
+    }
+
+    /// Create an infinite session config with custom thresholds.
+    pub fn with_thresholds(background: f64, exhaustion: f64) -> Self {
+        Self {
+            enabled: Some(true),
+            background_compaction_threshold: Some(background),
+            buffer_exhaustion_threshold: Some(exhaustion),
+        }
     }
 }
 
@@ -444,6 +550,8 @@ pub struct SessionConfig {
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_dir: Option<PathBuf>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<Tool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -454,12 +562,27 @@ pub struct SessionConfig {
     pub excluded_tools: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<ProviderConfig>,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub streaming: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mcp_servers: Option<HashMap<String, serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_agents: Option<Vec<CustomAgentConfig>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skill_directories: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled_skills: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "requestPermission")]
+    pub request_permission: Option<bool>,
+    /// Infinite session configuration for automatic context compaction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub infinite_sessions: Option<InfiniteSessionConfig>,
+
+    /// If true and provider/model not explicitly set, load from `COPILOT_SDK_BYOK_*` env vars.
+    ///
+    /// Default: false (explicit configuration preferred over environment variables)
+    #[serde(skip)]
+    pub auto_byok_from_env: bool,
 }
 
 /// Configuration for resuming an existing session.
@@ -470,12 +593,24 @@ pub struct ResumeSessionConfig {
     pub tools: Vec<Tool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<ProviderConfig>,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub streaming: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mcp_servers: Option<HashMap<String, serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_agents: Option<Vec<CustomAgentConfig>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skill_directories: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled_skills: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "requestPermission")]
+    pub request_permission: Option<bool>,
+
+    /// If true and provider not explicitly set, load from `COPILOT_SDK_BYOK_*` env vars.
+    ///
+    /// Default: false (explicit configuration preferred over environment variables)
+    #[serde(skip)]
+    pub auto_byok_from_env: bool,
 }
 
 /// Options for sending a message.
@@ -574,6 +709,83 @@ pub struct PingResponse {
     pub protocol_version: Option<u32>,
 }
 
+/// Response from status.get request.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetStatusResponse {
+    pub version: String,
+    pub protocol_version: u32,
+}
+
+/// Response from auth.getStatus request.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetAuthStatusResponse {
+    pub is_authenticated: bool,
+    #[serde(default)]
+    pub auth_type: Option<String>,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub login: Option<String>,
+    #[serde(default)]
+    pub status_message: Option<String>,
+}
+
+/// Model capabilities - what the model supports.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCapabilities {
+    #[serde(default)]
+    pub supports: ModelSupports,
+    #[serde(default)]
+    pub limits: ModelLimits,
+}
+
+/// What features a model supports.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ModelSupports {
+    #[serde(default)]
+    pub vision: bool,
+}
+
+/// Model limits.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelLimits {
+    #[serde(default)]
+    pub max_prompt_tokens: Option<u32>,
+    #[serde(default)]
+    pub max_context_window_tokens: u32,
+}
+
+/// Model policy state.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelPolicy {
+    pub state: String,
+    #[serde(default)]
+    pub terms: String,
+}
+
+/// Model billing information.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelBilling {
+    #[serde(default)]
+    pub multiplier: f64,
+}
+
+/// Information about an available model.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelInfo {
+    pub id: String,
+    pub name: String,
+    pub capabilities: ModelCapabilities,
+    #[serde(default)]
+    pub policy: Option<ModelPolicy>,
+    #[serde(default)]
+    pub billing: Option<ModelBilling>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -612,6 +824,29 @@ mod tests {
         let config = SessionConfig::default();
         assert!(config.model.is_none());
         assert!(config.tools.is_empty());
+    }
+
+    #[test]
+    fn test_session_config_serialization_with_new_fields() {
+        let config = SessionConfig {
+            session_id: Some("sess-1".into()),
+            model: Some("gpt-4.1".into()),
+            config_dir: Some(PathBuf::from("/tmp/copilot")),
+            streaming: true,
+            skill_directories: Some(vec!["skills".into()]),
+            disabled_skills: Some(vec!["legacy_skill".into()]),
+            request_permission: Some(true),
+            ..Default::default()
+        };
+
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(value["sessionId"], "sess-1");
+        assert_eq!(value["model"], "gpt-4.1");
+        assert_eq!(value["configDir"], "/tmp/copilot");
+        assert_eq!(value["streaming"], true);
+        assert_eq!(value["skillDirectories"][0], "skills");
+        assert_eq!(value["disabledSkills"][0], "legacy_skill");
+        assert_eq!(value["requestPermission"], true);
     }
 
     #[test]

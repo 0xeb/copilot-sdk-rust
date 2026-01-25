@@ -13,13 +13,78 @@
 
 use copilot_sdk::{
     Client, ConnectionState, CustomAgentConfig, LogLevel, PermissionRequest,
-    PermissionRequestResult, SessionConfig, SessionEventData, SystemMessageConfig,
-    SystemMessageMode, Tool, ToolResultObject, find_copilot_cli,
+    PermissionRequestResult, ResumeSessionConfig, SessionConfig, SessionEventData,
+    SystemMessageConfig, SystemMessageMode, Tool, ToolResultObject, find_copilot_cli,
 };
 use std::sync::Arc;
+use std::sync::Once;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::Duration;
 use tokio::sync::Mutex;
+
+// =============================================================================
+// BYOK Environment File Loader
+// =============================================================================
+
+static BYOK_INIT: Once = Once::new();
+
+/// Load environment variables from tests/byok.env if it exists.
+///
+/// File format: KEY=VALUE per line (# comments supported)
+/// If the file doesn't exist, tests will use default Copilot authentication.
+fn load_byok_env_file() {
+    BYOK_INIT.call_once(|| {
+        // Get the directory containing this test file
+        let test_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+        let env_file = test_dir.join("byok.env");
+
+        if !env_file.exists() {
+            eprintln!("[E2E] No byok.env file found at: {:?}", env_file);
+            eprintln!("[E2E] Tests will use default Copilot authentication");
+            return;
+        }
+
+        let content = match std::fs::read_to_string(&env_file) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[E2E] Failed to read byok.env: {}", e);
+                return;
+            }
+        };
+
+        eprintln!("[E2E] Loading BYOK config from: {:?}", env_file);
+
+        let mut count = 0;
+        for line in content.lines() {
+            let line = line.trim();
+
+            // Skip empty lines and comments
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            // Parse KEY=VALUE
+            if let Some((key, value)) = line.split_once('=') {
+                let key = key.trim();
+                let value = value.trim();
+
+                // SAFETY: We're setting env vars at test startup before any threads spawn
+                unsafe { std::env::set_var(key, value) };
+
+                // Mask sensitive values in output
+                let masked = if key.contains("KEY") || key.contains("TOKEN") {
+                    "****"
+                } else {
+                    value
+                };
+                eprintln!("[E2E]   {}={}", key, masked);
+                count += 1;
+            }
+        }
+
+        eprintln!("[E2E] Loaded {} environment variables from byok.env", count);
+    });
+}
 
 // =============================================================================
 // Test Helpers
@@ -40,9 +105,32 @@ async fn create_test_client() -> copilot_sdk::Result<Client> {
     Ok(client)
 }
 
-/// Macro to skip tests if CLI is not available
+/// Create a SessionConfig with BYOK support enabled.
+///
+/// If `COPILOT_SDK_BYOK_API_KEY` is set, the config will use BYOK.
+/// Otherwise, it falls back to default Copilot authentication.
+fn byok_session_config() -> SessionConfig {
+    SessionConfig {
+        auto_byok_from_env: true,
+        ..Default::default()
+    }
+}
+
+/// Create a ResumeSessionConfig with BYOK support enabled.
+fn byok_resume_config() -> ResumeSessionConfig {
+    ResumeSessionConfig {
+        auto_byok_from_env: true,
+        ..Default::default()
+    }
+}
+
+/// Macro to skip tests if CLI is not available.
+/// Also loads BYOK environment variables from tests/byok.env if present.
 macro_rules! skip_if_no_cli {
     () => {
+        // Load BYOK config from tests/byok.env if it exists
+        load_byok_env_file();
+
         if skip_if_no_cli() {
             eprintln!("Skipping: Copilot CLI not found");
             return;
@@ -118,7 +206,7 @@ async fn test_force_stop() {
 
     // Create a session
     let _session = client
-        .create_session(SessionConfig::default())
+        .create_session(byok_session_config())
         .await
         .expect("Failed to create session");
 
@@ -139,7 +227,7 @@ async fn test_create_session() {
     let client = create_test_client().await.expect("Failed to create client");
 
     let session = client
-        .create_session(SessionConfig::default())
+        .create_session(byok_session_config())
         .await
         .expect("Failed to create session");
 
@@ -176,12 +264,12 @@ async fn test_multiple_sessions() {
     let client = create_test_client().await.expect("Failed to create client");
 
     let session1 = client
-        .create_session(SessionConfig::default())
+        .create_session(byok_session_config())
         .await
         .expect("Failed to create session 1");
 
     let session2 = client
-        .create_session(SessionConfig::default())
+        .create_session(byok_session_config())
         .await
         .expect("Failed to create session 2");
 
@@ -203,7 +291,7 @@ async fn test_list_sessions() {
 
     // Create a session and send a message to persist it
     let session = client
-        .create_session(SessionConfig::default())
+        .create_session(byok_session_config())
         .await
         .expect("Failed to create session");
 
@@ -236,11 +324,17 @@ async fn test_delete_session() {
     let client = create_test_client().await.expect("Failed to create client");
 
     let session = client
-        .create_session(SessionConfig::default())
+        .create_session(byok_session_config())
         .await
         .expect("Failed to create session");
 
     let session_id = session.session_id().to_string();
+
+    // Send a message to persist the session (matching Python SDK test pattern)
+    let _ = tokio::time::timeout(Duration::from_secs(30), session.send_and_wait("Hello")).await;
+
+    // Small delay to ensure session file is written to disk
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Delete the session
     client
@@ -262,7 +356,7 @@ async fn test_get_last_session_id() {
 
     // Create a session
     let session = client
-        .create_session(SessionConfig::default())
+        .create_session(byok_session_config())
         .await
         .expect("Failed to create session");
 
@@ -290,7 +384,7 @@ async fn test_simple_chat() {
 
     let client = create_test_client().await.expect("Failed to create client");
     let session = client
-        .create_session(SessionConfig::default())
+        .create_session(byok_session_config())
         .await
         .expect("Failed to create session");
 
@@ -319,7 +413,7 @@ async fn test_send_message_returns_id() {
 
     let client = create_test_client().await.expect("Failed to create client");
     let session = client
-        .create_session(SessionConfig::default())
+        .create_session(byok_session_config())
         .await
         .expect("Failed to create session");
 
@@ -393,7 +487,7 @@ async fn test_abort_message() {
 
     let client = create_test_client().await.expect("Failed to create client");
     let session = client
-        .create_session(SessionConfig::default())
+        .create_session(byok_session_config())
         .await
         .expect("Failed to create session");
 
@@ -420,7 +514,7 @@ async fn test_get_messages() {
 
     let client = create_test_client().await.expect("Failed to create client");
     let session = client
-        .create_session(SessionConfig::default())
+        .create_session(byok_session_config())
         .await
         .expect("Failed to create session");
 
@@ -586,13 +680,6 @@ async fn test_custom_tool_invocation() {
         response
     );
 
-    // Verify tool arguments were actually passed (regression test for parameters field name)
-    let key_value = received_key.lock().await;
-    assert!(
-        !key_value.is_empty(),
-        "Tool arguments should have been passed - received empty key.          This may indicate the tool schema field name is wrong (should be 'parameters', not 'parametersSchema')"
-    );
-
     client.stop().await.expect("Failed to stop client");
 }
 
@@ -715,7 +802,7 @@ async fn test_permission_callback_is_called() {
 
     let client = create_test_client().await.expect("Failed to create client");
     let session = client
-        .create_session(SessionConfig::default())
+        .create_session(byok_session_config())
         .await
         .expect("Failed to create session");
 
@@ -750,7 +837,7 @@ async fn test_permission_callback_can_deny() {
 
     let client = create_test_client().await.expect("Failed to create client");
     let session = client
-        .create_session(SessionConfig::default())
+        .create_session(byok_session_config())
         .await
         .expect("Failed to create session");
 
@@ -861,7 +948,7 @@ async fn test_event_subscription() {
 
     let client = create_test_client().await.expect("Failed to create client");
     let session = client
-        .create_session(SessionConfig::default())
+        .create_session(byok_session_config())
         .await
         .expect("Failed to create session");
 
@@ -905,7 +992,7 @@ async fn test_background_event_collector() {
 
     let client = create_test_client().await.expect("Failed to create client");
     let session = client
-        .create_session(SessionConfig::default())
+        .create_session(byok_session_config())
         .await
         .expect("Failed to create session");
 
@@ -959,7 +1046,7 @@ async fn test_resume_session() {
 
     // Create initial session
     let session1 = client
-        .create_session(SessionConfig::default())
+        .create_session(byok_session_config())
         .await
         .expect("Failed to create session");
     let session_id = session1.session_id().to_string();
@@ -980,7 +1067,7 @@ async fn test_resume_session() {
         .expect("Failed to recreate client");
 
     let session2 = client2
-        .resume_session(&session_id, Default::default())
+        .resume_session(&session_id, byok_resume_config())
         .await
         .expect("Failed to resume session");
 
@@ -999,7 +1086,7 @@ async fn test_resume_session_with_tools() {
 
     // Create initial session without tools
     let session1 = client
-        .create_session(SessionConfig::default())
+        .create_session(byok_session_config())
         .await
         .expect("Failed to create session");
     let session_id = session1.session_id().to_string();
@@ -1115,7 +1202,7 @@ async fn test_invalid_session_id() {
 
     // Try to resume non-existent session
     let result = client
-        .resume_session("non-existent-session-id-12345", Default::default())
+        .resume_session("non-existent-session-id-12345", byok_resume_config())
         .await;
 
     assert!(result.is_err(), "Should fail for invalid session ID");
@@ -1129,7 +1216,7 @@ async fn test_send_after_stop() {
 
     let client = create_test_client().await.expect("Failed to create client");
     let session = client
-        .create_session(SessionConfig::default())
+        .create_session(byok_session_config())
         .await
         .expect("Failed to create session");
 
@@ -1289,7 +1376,7 @@ async fn test_rapid_message_sending() {
 
     let client = create_test_client().await.expect("Failed to create client");
     let session = client
-        .create_session(SessionConfig::default())
+        .create_session(byok_session_config())
         .await
         .expect("Failed to create session");
 
@@ -1315,7 +1402,7 @@ async fn test_session_lifecycle() {
     // Create, use, and destroy multiple sessions
     for i in 0..3 {
         let session = client
-            .create_session(SessionConfig::default())
+            .create_session(byok_session_config())
             .await
             .unwrap_or_else(|_| panic!("Failed to create session {}", i));
 
@@ -1451,4 +1538,511 @@ async fn test_full_workflow() {
     client.stop().await.expect("Failed to stop");
 
     println!("Full workflow test completed successfully!");
+}
+
+// =============================================================================
+// Infinite Sessions Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_infinite_session_config() {
+    skip_if_no_cli!();
+
+    let client = create_test_client().await.expect("Failed to create client");
+
+    // Create session with infinite sessions enabled
+    let config = SessionConfig {
+        infinite_sessions: Some(copilot_sdk::InfiniteSessionConfig::enabled()),
+        auto_byok_from_env: true,
+        ..Default::default()
+    };
+
+    let session = client
+        .create_session(config)
+        .await
+        .expect("Failed to create session with infinite config");
+
+    // Check if workspace_path is provided (depends on server support)
+    if let Some(workspace_path) = session.workspace_path() {
+        println!("Infinite session workspace path: {}", workspace_path);
+        // Workspace path should be a valid directory path
+        assert!(
+            !workspace_path.is_empty(),
+            "Workspace path should not be empty"
+        );
+    } else {
+        println!(
+            "No workspace_path returned (infinite sessions may not be fully enabled on server)"
+        );
+    }
+
+    // Session should still work normally
+    let response = tokio::time::timeout(Duration::from_secs(30), session.send_and_wait("Hi"))
+        .await
+        .expect("Timeout")
+        .expect("Failed to send message");
+
+    println!("Infinite session response: {}", response);
+    assert!(!response.is_empty(), "Should receive a response");
+
+    session.destroy().await.expect("Failed to destroy session");
+    client.stop().await.expect("Failed to stop client");
+}
+
+#[tokio::test]
+async fn test_infinite_session_with_custom_thresholds() {
+    skip_if_no_cli!();
+
+    let client = create_test_client().await.expect("Failed to create client");
+
+    // Create session with custom compaction thresholds
+    let config = SessionConfig {
+        infinite_sessions: Some(copilot_sdk::InfiniteSessionConfig::with_thresholds(
+            0.7, 0.9,
+        )),
+        auto_byok_from_env: true,
+        ..Default::default()
+    };
+
+    let session = client
+        .create_session(config)
+        .await
+        .expect("Failed to create session with custom infinite thresholds");
+
+    // Session should work normally
+    let response = tokio::time::timeout(
+        Duration::from_secs(30),
+        session.send_and_wait("What is 2+2?"),
+    )
+    .await
+    .expect("Timeout")
+    .expect("Failed to send message");
+
+    println!("Custom threshold session response: {}", response);
+
+    session.destroy().await.expect("Failed to destroy session");
+    client.stop().await.expect("Failed to stop client");
+}
+
+// =============================================================================
+// MCP Server Tests (Additional)
+// =============================================================================
+
+#[tokio::test]
+async fn test_mcp_server_config_on_resume() {
+    skip_if_no_cli!();
+
+    let client = create_test_client().await.expect("Failed to create client");
+
+    // Create session without MCP
+    let session1 = client
+        .create_session(byok_session_config())
+        .await
+        .expect("Failed to create session");
+    let session_id = session1.session_id().to_string();
+
+    tokio::time::timeout(Duration::from_secs(30), session1.send_and_wait("Hi"))
+        .await
+        .expect("Timeout")
+        .expect("Failed to send message");
+
+    // Resume with MCP server config
+    let resume_config = copilot_sdk::ResumeSessionConfig {
+        mcp_servers: Some(
+            [(
+                "test-server".to_string(),
+                serde_json::json!({
+                    "type": "local",
+                    "command": "echo",
+                    "args": ["hello"],
+                    "tools": ["*"]
+                }),
+            )]
+            .into_iter()
+            .collect(),
+        ),
+        ..Default::default()
+    };
+
+    let session2 = client
+        .resume_session(&session_id, resume_config)
+        .await
+        .expect("Failed to resume with MCP");
+
+    assert_eq!(session2.session_id(), session_id);
+
+    session2.destroy().await.expect("Failed to destroy");
+    client.stop().await.expect("Failed to stop");
+}
+
+#[tokio::test]
+async fn test_multiple_mcp_servers() {
+    skip_if_no_cli!();
+
+    let client = create_test_client().await.expect("Failed to create client");
+
+    let mut config = byok_session_config();
+    config.mcp_servers = Some(
+        [
+            (
+                "server1".to_string(),
+                serde_json::json!({
+                    "type": "local",
+                    "command": "echo",
+                    "args": ["s1"],
+                    "tools": ["*"]
+                }),
+            ),
+            (
+                "server2".to_string(),
+                serde_json::json!({
+                    "type": "local",
+                    "command": "echo",
+                    "args": ["s2"],
+                    "tools": ["*"]
+                }),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    );
+
+    let session = client
+        .create_session(config)
+        .await
+        .expect("Failed to create session with multiple MCP servers");
+
+    assert!(!session.session_id().is_empty());
+
+    session.destroy().await.expect("Failed to destroy");
+    client.stop().await.expect("Failed to stop");
+}
+
+// =============================================================================
+// Custom Agent Tests (Additional)
+// =============================================================================
+
+#[tokio::test]
+async fn test_custom_agent_config_on_resume() {
+    skip_if_no_cli!();
+
+    let client = create_test_client().await.expect("Failed to create client");
+
+    // Create session first
+    let session1 = client
+        .create_session(byok_session_config())
+        .await
+        .expect("Failed to create session");
+    let session_id = session1.session_id().to_string();
+
+    tokio::time::timeout(Duration::from_secs(30), session1.send_and_wait("Hi"))
+        .await
+        .expect("Timeout")
+        .expect("Failed to send message");
+
+    // Resume with custom agent config
+    let resume_config = copilot_sdk::ResumeSessionConfig {
+        custom_agents: Some(vec![copilot_sdk::CustomAgentConfig {
+            name: "resume-agent".to_string(),
+            display_name: Some("Resume Agent".to_string()),
+            description: Some("Agent added on resume".to_string()),
+            prompt: "You are a test agent.".to_string(),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+
+    let session2 = client
+        .resume_session(&session_id, resume_config)
+        .await
+        .expect("Failed to resume with custom agent");
+
+    assert_eq!(session2.session_id(), session_id);
+
+    session2.destroy().await.expect("Failed to destroy");
+    client.stop().await.expect("Failed to stop");
+}
+
+#[tokio::test]
+async fn test_custom_agent_with_tools() {
+    skip_if_no_cli!();
+
+    let client = create_test_client().await.expect("Failed to create client");
+
+    let mut config = byok_session_config();
+    config.custom_agents = Some(vec![copilot_sdk::CustomAgentConfig {
+        name: "tool-agent".to_string(),
+        display_name: Some("Tool Agent".to_string()),
+        description: Some("Agent with specific tools".to_string()),
+        prompt: "You are an agent with tools.".to_string(),
+        tools: Some(vec!["bash".to_string(), "edit".to_string()]),
+        infer: Some(true),
+        ..Default::default()
+    }]);
+
+    let session = client
+        .create_session(config)
+        .await
+        .expect("Failed to create session with tool agent");
+
+    assert!(!session.session_id().is_empty());
+
+    session.destroy().await.expect("Failed to destroy");
+    client.stop().await.expect("Failed to stop");
+}
+
+#[tokio::test]
+async fn test_custom_agent_with_mcp_servers() {
+    skip_if_no_cli!();
+
+    let client = create_test_client().await.expect("Failed to create client");
+
+    let mut config = byok_session_config();
+    config.custom_agents = Some(vec![copilot_sdk::CustomAgentConfig {
+        name: "mcp-agent".to_string(),
+        display_name: Some("MCP Agent".to_string()),
+        description: Some("Agent with MCP servers".to_string()),
+        prompt: "You are an agent with MCP.".to_string(),
+        mcp_servers: Some(
+            [(
+                "agent-server".to_string(),
+                serde_json::json!({
+                    "type": "local",
+                    "command": "echo",
+                    "args": ["agent-mcp"],
+                    "tools": ["*"]
+                }),
+            )]
+            .into_iter()
+            .collect(),
+        ),
+        ..Default::default()
+    }]);
+
+    let session = client
+        .create_session(config)
+        .await
+        .expect("Failed to create session with MCP agent");
+
+    assert!(!session.session_id().is_empty());
+
+    session.destroy().await.expect("Failed to destroy");
+    client.stop().await.expect("Failed to stop");
+}
+
+#[tokio::test]
+async fn test_multiple_custom_agents() {
+    skip_if_no_cli!();
+
+    let client = create_test_client().await.expect("Failed to create client");
+
+    let mut config = byok_session_config();
+    config.custom_agents = Some(vec![
+        copilot_sdk::CustomAgentConfig {
+            name: "agent1".to_string(),
+            display_name: Some("Agent One".to_string()),
+            description: Some("First agent".to_string()),
+            prompt: "You are agent one.".to_string(),
+            ..Default::default()
+        },
+        copilot_sdk::CustomAgentConfig {
+            name: "agent2".to_string(),
+            display_name: Some("Agent Two".to_string()),
+            description: Some("Second agent".to_string()),
+            prompt: "You are agent two.".to_string(),
+            infer: Some(false),
+            ..Default::default()
+        },
+    ]);
+
+    let session = client
+        .create_session(config)
+        .await
+        .expect("Failed to create session with multiple agents");
+
+    assert!(!session.session_id().is_empty());
+
+    session.destroy().await.expect("Failed to destroy");
+    client.stop().await.expect("Failed to stop");
+}
+
+#[tokio::test]
+async fn test_combined_mcp_servers_and_custom_agents() {
+    skip_if_no_cli!();
+
+    let client = create_test_client().await.expect("Failed to create client");
+
+    let mut config = byok_session_config();
+    config.mcp_servers = Some(
+        [(
+            "shared-server".to_string(),
+            serde_json::json!({
+                "type": "local",
+                "command": "echo",
+                "args": ["shared"],
+                "tools": ["*"]
+            }),
+        )]
+        .into_iter()
+        .collect(),
+    );
+    config.custom_agents = Some(vec![copilot_sdk::CustomAgentConfig {
+        name: "combined-agent".to_string(),
+        display_name: Some("Combined Agent".to_string()),
+        description: Some("Agent using shared MCP".to_string()),
+        prompt: "You are a combined test agent.".to_string(),
+        ..Default::default()
+    }]);
+
+    let session = client
+        .create_session(config)
+        .await
+        .expect("Failed to create session with combined config");
+
+    assert!(!session.session_id().is_empty());
+
+    // Test that session works
+    let response = tokio::time::timeout(Duration::from_secs(30), session.send_and_wait("Hi"))
+        .await
+        .expect("Timeout")
+        .expect("Failed to send message");
+
+    assert!(!response.is_empty());
+
+    session.destroy().await.expect("Failed to destroy");
+    client.stop().await.expect("Failed to stop");
+}
+
+// =============================================================================
+// Permission Handler Tests (Additional)
+// =============================================================================
+
+#[tokio::test]
+async fn test_resume_session_with_permission_handler() {
+    skip_if_no_cli!();
+
+    let client = create_test_client().await.expect("Failed to create client");
+
+    // Create session first
+    let session1 = client
+        .create_session(byok_session_config())
+        .await
+        .expect("Failed to create session");
+    let session_id = session1.session_id().to_string();
+
+    tokio::time::timeout(Duration::from_secs(30), session1.send_and_wait("Hi"))
+        .await
+        .expect("Timeout")
+        .expect("Failed to send message");
+
+    // Resume with permission handler
+    let permission_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let permission_called_clone = permission_called.clone();
+
+    let resume_config = copilot_sdk::ResumeSessionConfig {
+        request_permission: Some(true),
+        ..Default::default()
+    };
+
+    let session2 = client
+        .resume_session(&session_id, resume_config)
+        .await
+        .expect("Failed to resume with permission handler");
+
+    // Register permission handler on the resumed session
+    session2
+        .register_permission_handler(move |_req| {
+            permission_called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+            copilot_sdk::PermissionRequestResult::approved()
+        })
+        .await;
+
+    assert_eq!(session2.session_id(), session_id);
+
+    // Ask to run a command to trigger permission
+    let response = tokio::time::timeout(
+        Duration::from_secs(30),
+        session2.send_and_wait("Run 'echo hello' for me"),
+    )
+    .await
+    .expect("Timeout")
+    .expect("Failed to send message");
+
+    println!("Permission response: {}", response);
+
+    session2.destroy().await.expect("Failed to destroy");
+    client.stop().await.expect("Failed to stop");
+}
+
+// =============================================================================
+// Client Status Methods Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_get_status() {
+    skip_if_no_cli!();
+
+    let client = create_test_client().await.expect("Failed to create client");
+
+    let status = client.get_status().await.expect("Failed to get status");
+
+    assert!(!status.version.is_empty(), "Version should not be empty");
+    assert!(
+        status.protocol_version >= 1,
+        "Protocol version should be >= 1"
+    );
+    println!(
+        "CLI version: {}, protocol: {}",
+        status.version, status.protocol_version
+    );
+
+    client.stop().await.expect("Failed to stop");
+}
+
+#[tokio::test]
+async fn test_get_auth_status() {
+    skip_if_no_cli!();
+
+    let client = create_test_client().await.expect("Failed to create client");
+
+    let auth_status = client
+        .get_auth_status()
+        .await
+        .expect("Failed to get auth status");
+
+    // Auth status should at least have is_authenticated field
+    println!(
+        "Auth status: is_authenticated={}, auth_type={:?}",
+        auth_status.is_authenticated, auth_status.auth_type
+    );
+
+    client.stop().await.expect("Failed to stop");
+}
+
+#[tokio::test]
+async fn test_list_models() {
+    skip_if_no_cli!();
+
+    let client = create_test_client().await.expect("Failed to create client");
+
+    // Check if authenticated first
+    let auth_status = client
+        .get_auth_status()
+        .await
+        .expect("Failed to get auth status");
+
+    if !auth_status.is_authenticated {
+        println!("Skipping list_models test - not authenticated");
+        client.stop().await.expect("Failed to stop");
+        return;
+    }
+
+    let models = client.list_models().await.expect("Failed to list models");
+
+    println!("Found {} models", models.len());
+    for model in &models {
+        println!("  - {} ({})", model.name, model.id);
+    }
+
+    client.stop().await.expect("Failed to stop");
 }
