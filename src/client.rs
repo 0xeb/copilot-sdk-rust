@@ -30,6 +30,26 @@ use tokio::sync::{Mutex, RwLock};
 // Helper Functions
 // =============================================================================
 
+/// Generate a UUID v4 string for the TCP connection token.
+/// Uses `rand` (already a crate dependency); avoids pulling in the `uuid` crate.
+fn generate_uuid_v4() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let mut bytes = [0u8; 16];
+    rng.fill(&mut bytes);
+    // RFC 4122: version 4 + variant 10xx
+    bytes[6] = (bytes[6] & 0x0F) | 0x40;
+    bytes[8] = (bytes[8] & 0x3F) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3],
+        bytes[4], bytes[5],
+        bytes[6], bytes[7],
+        bytes[8], bytes[9],
+        bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+    )
+}
+
 /// Resolve CLI command for the current platform.
 ///
 /// On Windows, .cmd/.bat files are npm wrappers that need special handling.
@@ -526,9 +546,7 @@ pub struct Client {
 
 impl Client {
     /// Create a new Copilot client with the given options.
-    pub fn new(options: ClientOptions) -> Result<Self> {
-        let mut options = options;
-
+    pub fn new(mut options: ClientOptions) -> Result<Self> {
         if options.cli_url.is_some() {
             options.use_stdio = false;
         }
@@ -561,6 +579,28 @@ impl Client {
             return Err(CopilotError::InvalidConfig(
                 "use_logged_in_user cannot be used with cli_url (external server doesn't accept this option)".into(),
             ));
+        }
+
+        // tcp_connection_token validation (matches upstream nodejs v0.1.49).
+        if let Some(ref token) = options.tcp_connection_token {
+            if token.is_empty() {
+                return Err(CopilotError::InvalidConfig(
+                    "tcp_connection_token must be a non-empty string".into(),
+                ));
+            }
+            if options.use_stdio {
+                return Err(CopilotError::InvalidConfig(
+                    "tcp_connection_token cannot be used with use_stdio = true".into(),
+                ));
+            }
+        }
+
+        // Auto-generate a UUID v4 connection token when SDK spawns its own CLI
+        // in TCP mode and no token was provided. Mirrors nodejs effective-
+        // ConnectionToken so loopback listeners are safe by default.
+        if options.cli_url.is_none() && !options.use_stdio && options.tcp_connection_token.is_none()
+        {
+            options.tcp_connection_token = Some(generate_uuid_v4());
         }
 
         Ok(Self {
@@ -1034,9 +1074,11 @@ impl Client {
             match result {
                 Ok(v) => return Ok(v),
                 Err(e) => {
+                    #[allow(deprecated)]
+                    let allow_restart = self.options.auto_restart;
                     if attempt == 0
                         && *self.state.read().await == ConnectionState::Connected
-                        && self.options.auto_restart
+                        && allow_restart
                         && self.should_restart_on_error(&e)
                     {
                         attempt += 1;
@@ -1066,7 +1108,9 @@ impl Client {
                 }
             }
             ConnectionState::Error => {
-                if self.options.auto_restart {
+                #[allow(deprecated)]
+                let allow_restart = self.options.auto_restart;
+                if allow_restart {
                     self.restart().await
                 } else {
                     Err(CopilotError::NotConnected)
@@ -1149,6 +1193,18 @@ impl Client {
             args.extend(["--port".to_string(), self.options.port.to_string()]);
         }
 
+        // Session idle timeout: only emit when > 0.
+        if let Some(secs) = self.options.session_idle_timeout_seconds {
+            if secs > 0 {
+                args.extend(["--session-idle-timeout".to_string(), secs.to_string()]);
+            }
+        }
+
+        // Remote session support flag.
+        if self.options.remote {
+            args.push("--remote".to_string());
+        }
+
         // Wire github_token auth: CLI flag for auth token env var
         if self.options.github_token.is_some() {
             args.push("--auth-token-env".to_string());
@@ -1194,6 +1250,16 @@ impl Client {
         // Wire use_logged_in_user: when false, pass --no-auto-login
         if let Some(false) = self.options.use_logged_in_user {
             args.push("--no-auto-login".to_string());
+        }
+
+        // Forward TCP connection token (auto-generated UUID in TCP+spawn mode if caller didn't set one).
+        if let Some(ref token) = self.options.tcp_connection_token {
+            proc_options = proc_options.env("COPILOT_CONNECTION_TOKEN", token);
+        }
+
+        // Configurable Copilot data directory.
+        if let Some(ref home) = self.options.copilot_home {
+            proc_options = proc_options.env("COPILOT_HOME", home.to_string_lossy().to_string());
         }
 
         // Propagate telemetry configuration as environment variables
@@ -1470,9 +1536,17 @@ impl ClientBuilder {
         self
     }
 
-    /// Auto-restart the connection after a fatal failure.
+    /// Deprecated: no effect, retained for source compatibility.
+    /// Matches upstream nodejs SDK which marks `autoRestart` as deprecated.
+    #[deprecated(
+        since = "0.1.18",
+        note = "auto_restart has no effect and will be removed in a future release"
+    )]
     pub fn auto_restart(mut self, auto_restart: bool) -> Self {
-        self.options.auto_restart = auto_restart;
+        #[allow(deprecated)]
+        {
+            self.options.auto_restart = auto_restart;
+        }
         self
     }
 
@@ -1506,6 +1580,39 @@ impl ClientBuilder {
     /// Set whether to use the logged-in user for auth.
     pub fn use_logged_in_user(mut self, value: bool) -> Self {
         self.options.use_logged_in_user = Some(value);
+        self
+    }
+
+    /// Set the TCP connection token forwarded to the spawned CLI via the
+    /// `COPILOT_CONNECTION_TOKEN` environment variable. Must be a non-empty
+    /// string and cannot be combined with `use_stdio = true`. When omitted in
+    /// TCP-spawn mode, the SDK auto-generates a UUID v4 so the loopback
+    /// listener is safe by default.
+    pub fn tcp_connection_token(mut self, token: impl Into<String>) -> Self {
+        self.options.tcp_connection_token = Some(token.into());
+        self
+    }
+
+    /// Set the Copilot CLI data directory (`$COPILOT_HOME`). When omitted,
+    /// the CLI uses its default location (typically `~/.copilot`).
+    pub fn copilot_home(mut self, path: impl Into<PathBuf>) -> Self {
+        self.options.copilot_home = Some(path.into());
+        self
+    }
+
+    /// Set the server-wide session idle timeout (in seconds). Sessions without
+    /// activity for this duration are automatically cleaned up. Set to `0` to
+    /// disable. Only used when the SDK spawns the CLI process.
+    pub fn session_idle_timeout_seconds(mut self, secs: u32) -> Self {
+        self.options.session_idle_timeout_seconds = Some(secs);
+        self
+    }
+
+    /// Enable remote session support (Mission Control integration). When set,
+    /// sessions in a GitHub repository working directory become accessible
+    /// from GitHub web and mobile. Only used when the SDK spawns the CLI.
+    pub fn remote(mut self, remote: bool) -> Self {
+        self.options.remote = remote;
         self
     }
 
@@ -1772,5 +1879,144 @@ mod tests {
             "arguments": "{not valid json"
         });
         assert_eq!(normalize_tool_arguments(&params), json!({}));
+    }
+
+    // =========================================================================
+    // v0.1.49 ClientOptions additions
+    // =========================================================================
+
+    #[test]
+    fn test_generate_uuid_v4_shape() {
+        let uuid = generate_uuid_v4();
+        assert_eq!(uuid.len(), 36, "UUID should be 36 chars (8-4-4-4-12)");
+        let parts: Vec<&str> = uuid.split('-').collect();
+        assert_eq!(parts.len(), 5);
+        assert_eq!(parts[0].len(), 8);
+        assert_eq!(parts[1].len(), 4);
+        assert_eq!(parts[2].len(), 4);
+        assert_eq!(parts[3].len(), 4);
+        assert_eq!(parts[4].len(), 12);
+        // Version 4 nibble.
+        assert_eq!(parts[2].chars().next().unwrap(), '4');
+        // Variant: parts[3] first char must be 8, 9, a, or b.
+        let variant = parts[3].chars().next().unwrap();
+        assert!(matches!(variant, '8' | '9' | 'a' | 'b'));
+        // Two consecutive UUIDs differ (extremely high probability).
+        assert_ne!(uuid, generate_uuid_v4());
+    }
+
+    #[test]
+    fn test_tcp_connection_token_empty_rejected() {
+        let options = ClientOptions {
+            use_stdio: false,
+            tcp_connection_token: Some(String::new()),
+            ..Default::default()
+        };
+        let err = match Client::new(options) {
+            Ok(_) => panic!("expected error for empty connection token"),
+            Err(e) => e,
+        };
+        match err {
+            CopilotError::InvalidConfig(msg) => {
+                assert!(msg.contains("tcp_connection_token"));
+                assert!(msg.contains("non-empty"));
+            }
+            other => panic!("expected InvalidConfig, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_tcp_connection_token_rejected_with_stdio() {
+        let options = ClientOptions {
+            use_stdio: true,
+            tcp_connection_token: Some("abc".into()),
+            ..Default::default()
+        };
+        let err = match Client::new(options) {
+            Ok(_) => panic!("expected error for token + stdio"),
+            Err(e) => e,
+        };
+        match err {
+            CopilotError::InvalidConfig(msg) => {
+                assert!(msg.contains("tcp_connection_token"));
+                assert!(msg.contains("use_stdio"));
+            }
+            other => panic!("expected InvalidConfig, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_tcp_connection_token_auto_generated_in_tcp_spawn_mode() {
+        let options = ClientOptions {
+            use_stdio: false,
+            ..Default::default()
+        };
+        let client = match Client::new(options) {
+            Ok(c) => c,
+            Err(e) => panic!("Client::new failed: {e:?}"),
+        };
+        let token = client.options.tcp_connection_token.as_deref().unwrap();
+        assert_eq!(token.len(), 36);
+    }
+
+    #[test]
+    fn test_tcp_connection_token_not_generated_with_cli_url() {
+        let options = ClientOptions {
+            use_stdio: false,
+            cli_url: Some("localhost:8080".into()),
+            ..Default::default()
+        };
+        let client = match Client::new(options) {
+            Ok(c) => c,
+            Err(e) => panic!("Client::new failed: {e:?}"),
+        };
+        assert!(client.options.tcp_connection_token.is_none());
+    }
+
+    #[test]
+    fn test_tcp_connection_token_not_generated_for_stdio() {
+        let options = ClientOptions {
+            use_stdio: true,
+            ..Default::default()
+        };
+        let client = match Client::new(options) {
+            Ok(c) => c,
+            Err(e) => panic!("Client::new failed: {e:?}"),
+        };
+        assert!(client.options.tcp_connection_token.is_none());
+    }
+
+    #[test]
+    fn test_client_options_default_remote_is_false() {
+        let opts = ClientOptions::default();
+        assert!(!opts.remote);
+        assert!(opts.copilot_home.is_none());
+        assert!(opts.session_idle_timeout_seconds.is_none());
+    }
+
+    #[test]
+    fn test_client_builder_v0_1_49_setters() {
+        let client = match Client::builder()
+            .use_stdio(false)
+            .tcp_connection_token("my-token-1234")
+            .copilot_home("/tmp/copilot-home")
+            .session_idle_timeout_seconds(600)
+            .remote(true)
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => panic!("build failed: {e:?}"),
+        };
+
+        assert_eq!(
+            client.options.tcp_connection_token.as_deref(),
+            Some("my-token-1234")
+        );
+        assert_eq!(
+            client.options.copilot_home.as_ref().unwrap().to_str(),
+            Some("/tmp/copilot-home")
+        );
+        assert_eq!(client.options.session_idle_timeout_seconds, Some(600));
+        assert!(client.options.remote);
     }
 }

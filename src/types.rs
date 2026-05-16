@@ -1002,6 +1002,12 @@ pub struct ClientOptions {
     pub cli_url: Option<String>,
     pub log_level: LogLevel,
     pub auto_start: bool,
+    /// Deprecated: no effect, retained for source compatibility.
+    /// Matches upstream nodejs SDK which marks `autoRestart` as deprecated.
+    #[deprecated(
+        since = "0.1.18",
+        note = "auto_restart has no effect and will be removed in a future release"
+    )]
     pub auto_restart: bool,
     pub environment: Option<HashMap<String, String>>,
     /// GitHub personal access token for authentication.
@@ -1052,10 +1058,37 @@ pub struct ClientOptions {
                 + Sync,
         >,
     >,
+
+    // ===== v0.1.49 additions =====
+    /// Connection token for the headless CLI server (TCP only). When the SDK
+    /// spawns its own CLI in TCP mode and this is omitted, a UUID is generated
+    /// automatically so the loopback listener is safe by default. Rejected with
+    /// `use_stdio = true` (stdio is pre-authenticated by pipes).
+    /// Forwarded to the CLI via the COPILOT_CONNECTION_TOKEN environment variable.
+    pub tcp_connection_token: Option<String>,
+
+    /// Custom data directory for the Copilot CLI ($COPILOT_HOME). When omitted,
+    /// the CLI uses its default location (typically ~/.copilot).
+    pub copilot_home: Option<PathBuf>,
+
+    /// Server-wide idle timeout for sessions in seconds.
+    /// Sessions without activity for this duration are automatically cleaned up.
+    /// Set to None (or 0) to disable (sessions live indefinitely).
+    /// Only used when the SDK spawns the CLI process; ignored when connecting
+    /// to an external server via `cli_url`.
+    pub session_idle_timeout_seconds: Option<u32>,
+
+    /// Enable remote session support (Mission Control integration).
+    /// When true, sessions in a GitHub repository working directory are
+    /// accessible from GitHub web and mobile.
+    /// Only used when the SDK spawns the CLI process; ignored when connecting
+    /// to an external server via `cli_url`.
+    pub remote: bool,
 }
 
 impl Default for ClientOptions {
     fn default() -> Self {
+        #[allow(deprecated)]
         Self {
             cli_path: None,
             cli_args: None,
@@ -1065,7 +1098,7 @@ impl Default for ClientOptions {
             cli_url: None,
             log_level: LogLevel::Info,
             auto_start: true,
-            auto_restart: true,
+            auto_restart: false,
             environment: None,
             github_token: None,
             use_logged_in_user: None,
@@ -1074,12 +1107,18 @@ impl Default for ClientOptions {
             allow_all_tools: false,
             telemetry: None,
             on_list_models: None,
+            tcp_connection_token: None,
+            copilot_home: None,
+            session_idle_timeout_seconds: None,
+            remote: false,
         }
     }
 }
 
 impl std::fmt::Debug for ClientOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        #[allow(deprecated)]
+        let auto_restart = self.auto_restart;
         f.debug_struct("ClientOptions")
             .field("cli_path", &self.cli_path)
             .field("cli_args", &self.cli_args)
@@ -1089,7 +1128,7 @@ impl std::fmt::Debug for ClientOptions {
             .field("cli_url", &self.cli_url)
             .field("log_level", &self.log_level)
             .field("auto_start", &self.auto_start)
-            .field("auto_restart", &self.auto_restart)
+            .field("auto_restart", &auto_restart)
             .field("environment", &self.environment)
             .field("github_token", &self.github_token)
             .field("use_logged_in_user", &self.use_logged_in_user)
@@ -1101,12 +1140,22 @@ impl std::fmt::Debug for ClientOptions {
                 "on_list_models",
                 &self.on_list_models.as_ref().map(|_| "Fn(...)"),
             )
+            .field("tcp_connection_token", &self.tcp_connection_token)
+            .field("copilot_home", &self.copilot_home)
+            .field(
+                "session_idle_timeout_seconds",
+                &self.session_idle_timeout_seconds,
+            )
+            .field("remote", &self.remote)
             .finish()
     }
 }
 
 impl Clone for ClientOptions {
     fn clone(&self) -> Self {
+        #[allow(deprecated)]
+        let auto_restart = self.auto_restart;
+        #[allow(deprecated)]
         Self {
             cli_path: self.cli_path.clone(),
             cli_args: self.cli_args.clone(),
@@ -1116,7 +1165,7 @@ impl Clone for ClientOptions {
             cli_url: self.cli_url.clone(),
             log_level: self.log_level,
             auto_start: self.auto_start,
-            auto_restart: self.auto_restart,
+            auto_restart,
             environment: self.environment.clone(),
             github_token: self.github_token.clone(),
             use_logged_in_user: self.use_logged_in_user,
@@ -1125,6 +1174,10 @@ impl Clone for ClientOptions {
             allow_all_tools: self.allow_all_tools,
             telemetry: self.telemetry.clone(),
             on_list_models: self.on_list_models.clone(),
+            tcp_connection_token: self.tcp_connection_token.clone(),
+            copilot_home: self.copilot_home.clone(),
+            session_idle_timeout_seconds: self.session_idle_timeout_seconds,
+            remote: self.remote,
         }
     }
 }
