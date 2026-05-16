@@ -9,6 +9,7 @@ use crate::error::{CopilotError, Result};
 use crate::events::SessionEvent;
 use crate::jsonrpc::{StdioJsonRpcClient, TcpJsonRpcClient};
 use crate::process::{CopilotProcess, ProcessOptions};
+use crate::rpc_methods;
 use crate::session::Session;
 use crate::types::{
     ClientOptions, ConnectionState, GetAuthStatusResponse, GetForegroundSessionResponse,
@@ -942,7 +943,7 @@ impl Client {
         self.ensure_connected().await?;
 
         let params = message.map(|m| json!({ "message": m }));
-        let result = self.invoke("ping", params).await?;
+        let result = self.invoke(rpc_methods::PING, params).await?;
 
         Ok(PingResponse {
             message: result
@@ -1007,7 +1008,7 @@ impl Client {
 
         self.ensure_connected().await?;
 
-        let result = self.invoke("models.list", None).await?;
+        let result = self.invoke(rpc_methods::MODELS_LIST, None).await?;
         let models = result
             .get("models")
             .cloned()
@@ -1027,7 +1028,7 @@ impl Client {
         self.ensure_connected().await?;
 
         let params = model_id.map(|id| json!({ "modelId": id }));
-        let result = self.invoke("tools.list", params).await?;
+        let result = self.invoke(rpc_methods::TOOLS_LIST, params).await?;
         serde_json::from_value(result)
             .map_err(|e| CopilotError::Protocol(format!("Failed to parse tools list: {}", e)))
     }
@@ -1369,7 +1370,10 @@ impl Client {
         let rpc = self.rpc.lock().await;
         let rpc = rpc.as_ref().ok_or(CopilotError::NotConnected)?;
         let result = rpc
-            .invoke("ping", Some(serde_json::json!({ "message": null })))
+            .invoke(
+                rpc_methods::PING,
+                Some(serde_json::json!({ "message": null })),
+            )
             .await?;
 
         let server_version = result

@@ -7,6 +7,7 @@
 
 use crate::error::{CopilotError, Result};
 use crate::events::{SessionEvent, SessionEventData};
+use crate::rpc_methods;
 use crate::types::{
     AgentInfo, ErrorOccurredHookInput, FleetStartOptions, LogOptions, LogResult, MessageOptions,
     PermissionRequest, PermissionRequestResult, PlanData, PostToolUseHookInput,
@@ -293,9 +294,11 @@ impl Session {
                                 }
                             })
                         };
-                        let _ =
-                            (self.invoke_fn)("session.tools.handlePendingToolCall", Some(params))
-                                .await;
+                        let _ = (self.invoke_fn)(
+                            rpc_methods::SESSION_TOOLS_HANDLE_PENDING_TOOL_CALL,
+                            Some(params),
+                        )
+                        .await;
                     }
                     Err(e) => {
                         let params = serde_json::json!({
@@ -303,9 +306,11 @@ impl Session {
                             "requestId": request_id,
                             "error": e.to_string(),
                         });
-                        let _ =
-                            (self.invoke_fn)("session.tools.handlePendingToolCall", Some(params))
-                                .await;
+                        let _ = (self.invoke_fn)(
+                            rpc_methods::SESSION_TOOLS_HANDLE_PENDING_TOOL_CALL,
+                            Some(params),
+                        )
+                        .await;
                     }
                 }
             }
@@ -362,7 +367,7 @@ impl Session {
                 });
 
                 let _ = (self.invoke_fn)(
-                    "session.permissions.handlePendingPermissionRequest",
+                    rpc_methods::SESSION_PERMISSIONS_HANDLE_PENDING_PERMISSION_REQUEST,
                     Some(perm_result),
                 )
                 .await;
@@ -724,7 +729,7 @@ impl Session {
     /// Get the current session mode.
     pub async fn get_mode(&self) -> Result<SessionMode> {
         let params = serde_json::json!({ "sessionId": self.session_id });
-        let result = (self.invoke_fn)("session.mode.get", Some(params)).await?;
+        let result = (self.invoke_fn)(rpc_methods::SESSION_MODE_GET, Some(params)).await?;
         let mode_str = result
             .get("mode")
             .and_then(|v| v.as_str())
@@ -739,7 +744,7 @@ impl Session {
             "sessionId": self.session_id,
             "mode": mode,
         });
-        (self.invoke_fn)("session.mode.set", Some(params)).await?;
+        (self.invoke_fn)(rpc_methods::SESSION_MODE_SET, Some(params)).await?;
         Ok(())
     }
 
@@ -761,7 +766,7 @@ impl Session {
                 params["ephemeral"] = serde_json::json!(ephemeral);
             }
         }
-        let result = (self.invoke_fn)("session.log", Some(params)).await?;
+        let result = (self.invoke_fn)(rpc_methods::SESSION_LOG, Some(params)).await?;
         let event_id = result
             .get("eventId")
             .and_then(|v| v.as_str())
@@ -777,7 +782,7 @@ impl Session {
     /// Read the current plan.
     pub async fn read_plan(&self) -> Result<Option<PlanData>> {
         let params = serde_json::json!({ "sessionId": self.session_id });
-        let result = (self.invoke_fn)("session.plan.read", Some(params)).await?;
+        let result = (self.invoke_fn)(rpc_methods::SESSION_PLAN_READ, Some(params)).await?;
         if result.is_null() || result.get("content").is_none() {
             return Ok(None);
         }
@@ -791,14 +796,14 @@ impl Session {
         let mut params = serde_json::to_value(plan)
             .map_err(|e| CopilotError::Protocol(format!("Failed to serialize plan: {}", e)))?;
         params["sessionId"] = serde_json::json!(self.session_id);
-        (self.invoke_fn)("session.plan.update", Some(params)).await?;
+        (self.invoke_fn)(rpc_methods::SESSION_PLAN_UPDATE, Some(params)).await?;
         Ok(())
     }
 
     /// Delete the session plan.
     pub async fn delete_plan(&self) -> Result<()> {
         let params = serde_json::json!({ "sessionId": self.session_id });
-        (self.invoke_fn)("session.plan.delete", Some(params)).await?;
+        (self.invoke_fn)(rpc_methods::SESSION_PLAN_DELETE, Some(params)).await?;
         Ok(())
     }
 
@@ -809,7 +814,7 @@ impl Session {
     /// List available agents.
     pub async fn list_agents(&self) -> Result<Vec<AgentInfo>> {
         let params = serde_json::json!({ "sessionId": self.session_id });
-        let result = (self.invoke_fn)("session.agent.list", Some(params)).await?;
+        let result = (self.invoke_fn)(rpc_methods::SESSION_AGENT_LIST, Some(params)).await?;
         let agents = result
             .get("agents")
             .cloned()
@@ -836,14 +841,14 @@ impl Session {
             "sessionId": self.session_id,
             "name": name,
         });
-        (self.invoke_fn)("session.agent.select", Some(params)).await?;
+        (self.invoke_fn)(rpc_methods::SESSION_AGENT_SELECT, Some(params)).await?;
         Ok(())
     }
 
     /// Deselect the current custom agent.
     pub async fn deselect_agent(&self) -> Result<()> {
         let params = serde_json::json!({ "sessionId": self.session_id });
-        (self.invoke_fn)("session.agent.deselect", Some(params)).await?;
+        (self.invoke_fn)(rpc_methods::SESSION_AGENT_DESELECT, Some(params)).await?;
         Ok(())
     }
 
@@ -870,7 +875,7 @@ impl Session {
                 params["prompt"] = serde_json::json!(prompt);
             }
         }
-        (self.invoke_fn)("session.fleet.start", Some(params)).await?;
+        (self.invoke_fn)(rpc_methods::SESSION_FLEET_START, Some(params)).await?;
         Ok(())
     }
 
@@ -884,7 +889,7 @@ impl Session {
             CopilotError::Protocol(format!("Failed to serialize shell options: {}", e))
         })?;
         params["sessionId"] = serde_json::json!(self.session_id);
-        let result = (self.invoke_fn)("session.shell.exec", Some(params)).await?;
+        let result = (self.invoke_fn)(rpc_methods::SESSION_SHELL_EXEC, Some(params)).await?;
         serde_json::from_value(result)
             .map_err(|e| CopilotError::Protocol(format!("Failed to parse shell result: {}", e)))
     }
@@ -896,7 +901,7 @@ impl Session {
             "processId": process_id,
             "signal": signal,
         });
-        (self.invoke_fn)("session.shell.kill", Some(params)).await?;
+        (self.invoke_fn)(rpc_methods::SESSION_SHELL_KILL, Some(params)).await?;
         Ok(())
     }
 

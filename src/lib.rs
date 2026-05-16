@@ -40,6 +40,8 @@ pub mod error;
 pub mod events;
 pub mod jsonrpc;
 pub mod process;
+pub mod rpc_methods;
+pub mod rpc_types;
 pub mod session;
 pub mod tools;
 pub mod transport;
@@ -235,3 +237,21 @@ pub use session::{
 
 // Re-export client types
 pub use client::{Client, ClientBuilder, LifecycleHandler};
+
+// Re-export representative new RPC payload types
+pub use rpc_types::{
+    CommandsHandlePendingCommandRequest, CommandsHandlePendingCommandResult, CommandsInvokeRequest,
+    CommandsListRequest, CommandsListResult, CommandsRespondToQueuedCommandRequest,
+    CommandsRespondToQueuedCommandResult, HistoryCompactContextWindow, HistoryCompactResult,
+    HistoryTruncateRequest, HistoryTruncateResult, QueuedCommandHandled, QueuedCommandNotHandled,
+    QueuedCommandResult, SessionFsAppendFileRequest, SessionFsError, SessionFsErrorCode,
+    SessionFsExistsRequest, SessionFsExistsResult, SessionFsMkdirRequest, SessionFsReadFileRequest,
+    SessionFsReadFileResult, SessionFsReaddirRequest, SessionFsReaddirResult,
+    SessionFsReaddirWithTypesEntry, SessionFsReaddirWithTypesEntryType,
+    SessionFsReaddirWithTypesRequest, SessionFsReaddirWithTypesResult, SessionFsRenameRequest,
+    SessionFsRmRequest, SessionFsSetProviderConventions, SessionFsSetProviderRequest,
+    SessionFsSetProviderResult, SessionFsStatRequest, SessionFsStatResult,
+    SessionFsWriteFileRequest, SessionsForkRequest, SessionsForkResult, SlashCommandInfo,
+    SlashCommandInput, SlashCommandInputCompletion, SlashCommandKind, UIElicitationResponse,
+    UIElicitationResponseAction, UIElicitationResult, UIHandlePendingElicitationRequest,
+};
