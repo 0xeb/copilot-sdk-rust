@@ -100,6 +100,7 @@ pub use types::{
     // Quota types
     QuotaResult,
     QuotaSnapshot,
+    RemoteSessionMode,
     ResumeSessionConfig,
     // Selection types
     SelectionAttachment,

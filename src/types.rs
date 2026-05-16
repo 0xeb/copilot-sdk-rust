@@ -69,6 +69,16 @@ pub enum LogLevel {
     All,
 }
 
+/// Remote-session mode (Mission Control integration). Matches upstream nodejs
+/// `RemoteSessionMode` union: `"off" | "export" | "on"`. v0.1.49 addition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteSessionMode {
+    Off,
+    Export,
+    On,
+}
+
 impl std::fmt::Display for LogLevel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -884,6 +894,28 @@ pub struct SessionConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
 
+    // ===== v0.1.49 additions =====
+    /// Enable per-session telemetry events (PR #1224).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_session_telemetry: Option<bool>,
+
+    /// Forward streaming events emitted by sub-agents (PR #1108).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_sub_agent_streaming_events: Option<bool>,
+
+    /// Allow the CLI to discover and apply config files in the working
+    /// directory (and ancestors) (PR #1044).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_config_discovery: Option<bool>,
+
+    /// Per-session instruction directories merged with the global set (PR #1190).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instruction_directories: Option<Vec<String>>,
+
+    /// Remote-session mode for Mission Control integration (PR #1295).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_session: Option<RemoteSessionMode>,
+
     /// Session hooks for pre/post tool use, session lifecycle, etc.
     #[serde(skip)]
     pub hooks: Option<SessionHooks>,
@@ -937,6 +969,22 @@ pub struct ResumeSessionConfig {
     /// Agent to use for the session.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+
+    // ===== v0.1.49 additions (mirror SessionConfig) =====
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_session_telemetry: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_sub_agent_streaming_events: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_config_discovery: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instruction_directories: Option<Vec<String>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_session: Option<RemoteSessionMode>,
 
     /// If true, skip resuming and create a new session instead.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -2196,5 +2244,65 @@ mod tests {
         let value = serde_json::to_value(&config).unwrap();
         assert_eq!(value["clientName"], "my-cli");
         assert_eq!(value["agent"], "helper");
+    }
+
+    // =========================================================================
+    // v0.1.49 SessionConfig / ResumeSessionConfig additive fields
+    // =========================================================================
+
+    #[test]
+    fn test_remote_session_mode_serialize() {
+        let v: serde_json::Value = serde_json::to_value(RemoteSessionMode::Off).unwrap();
+        assert_eq!(v, serde_json::json!("off"));
+        let v: serde_json::Value = serde_json::to_value(RemoteSessionMode::Export).unwrap();
+        assert_eq!(v, serde_json::json!("export"));
+        let v: serde_json::Value = serde_json::to_value(RemoteSessionMode::On).unwrap();
+        assert_eq!(v, serde_json::json!("on"));
+        let parsed: RemoteSessionMode =
+            serde_json::from_value(serde_json::json!("export")).unwrap();
+        assert_eq!(parsed, RemoteSessionMode::Export);
+    }
+
+    #[test]
+    fn test_session_config_v0149_fields_omitted_by_default() {
+        let cfg = SessionConfig::default();
+        let v = serde_json::to_value(&cfg).unwrap();
+        assert!(v.get("enableSessionTelemetry").is_none());
+        assert!(v.get("includeSubAgentStreamingEvents").is_none());
+        assert!(v.get("enableConfigDiscovery").is_none());
+        assert!(v.get("instructionDirectories").is_none());
+        assert!(v.get("remoteSession").is_none());
+    }
+
+    #[test]
+    fn test_session_config_v0149_fields_serialize() {
+        let cfg = SessionConfig {
+            enable_session_telemetry: Some(true),
+            include_sub_agent_streaming_events: Some(false),
+            enable_config_discovery: Some(true),
+            instruction_directories: Some(vec!["/a".into(), "/b".into()]),
+            remote_session: Some(RemoteSessionMode::Export),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(v["enableSessionTelemetry"], true);
+        assert_eq!(v["includeSubAgentStreamingEvents"], false);
+        assert_eq!(v["enableConfigDiscovery"], true);
+        assert_eq!(v["instructionDirectories"], serde_json::json!(["/a", "/b"]));
+        assert_eq!(v["remoteSession"], "export");
+    }
+
+    #[test]
+    fn test_resume_session_config_v0149_fields_serialize() {
+        let cfg = ResumeSessionConfig {
+            client_name: Some("my-app".into()),
+            instruction_directories: Some(vec!["/x".into()]),
+            remote_session: Some(RemoteSessionMode::On),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(v["clientName"], "my-app");
+        assert_eq!(v["instructionDirectories"], serde_json::json!(["/x"]));
+        assert_eq!(v["remoteSession"], "on");
     }
 }
