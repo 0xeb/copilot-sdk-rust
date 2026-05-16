@@ -13,7 +13,7 @@ use crate::session::Session;
 use crate::types::{
     ClientOptions, ConnectionState, GetAuthStatusResponse, GetForegroundSessionResponse,
     GetStatusResponse, LogLevel, ModelInfo, PingResponse, ProviderConfig, QuotaResult,
-    ResumeSessionConfig, SessionConfig, SessionLifecycleEvent, SessionMetadata,
+    ResumeSessionConfig, SessionConfig, SessionLifecycleEvent, SessionListFilter, SessionMetadata,
     SetForegroundSessionResponse, StopError, TelemetryConfig, ToolsListResult,
     MIN_PROTOCOL_VERSION, SDK_PROTOCOL_VERSION,
 };
@@ -840,9 +840,31 @@ impl Client {
 
     /// List all available sessions.
     pub async fn list_sessions(&self) -> Result<Vec<SessionMetadata>> {
+        self.list_sessions_with_filter(SessionListFilter::default())
+            .await
+    }
+
+    /// List sessions matching `filter`. Empty filter is equivalent to `list_sessions()`.
+    /// Matches upstream nodejs `CopilotClient.listSessions(filter)`.
+    pub async fn list_sessions_with_filter(
+        &self,
+        filter: SessionListFilter,
+    ) -> Result<Vec<SessionMetadata>> {
         self.ensure_connected().await?;
 
-        let result = self.invoke("session.list", None).await?;
+        // session.list takes an optional `filter` object (matches nodejs SDK shape).
+        let filter_json = serde_json::to_value(&filter).unwrap_or(Value::Null);
+        let params = if filter_json
+            .as_object()
+            .map(|m| m.is_empty())
+            .unwrap_or(true)
+        {
+            None
+        } else {
+            Some(json!({ "filter": filter_json }))
+        };
+
+        let result = self.invoke("session.list", params).await?;
 
         let sessions: Vec<SessionMetadata> = result
             .get("sessions")
@@ -850,6 +872,26 @@ impl Client {
             .unwrap_or_default();
 
         Ok(sessions)
+    }
+
+    /// Get metadata for a specific session by ID (O(1) lookup).
+    /// Returns `Ok(None)` when the server reports no matching session.
+    /// Matches upstream nodejs `CopilotClient.getSessionMetadata`.
+    pub async fn get_session_metadata(&self, session_id: &str) -> Result<Option<SessionMetadata>> {
+        self.ensure_connected().await?;
+
+        let params = json!({ "sessionId": session_id });
+        let result = self.invoke("session.getMetadata", Some(params)).await?;
+
+        let session_value = match result.get("session") {
+            Some(v) if !v.is_null() => v.clone(),
+            _ => return Ok(None),
+        };
+
+        let metadata: SessionMetadata = serde_json::from_value(session_value)
+            .map_err(|e| CopilotError::Protocol(format!("invalid session metadata: {e}")))?;
+
+        Ok(Some(metadata))
     }
 
     /// Delete a session.
@@ -2018,5 +2060,74 @@ mod tests {
         );
         assert_eq!(client.options.session_idle_timeout_seconds, Some(600));
         assert!(client.options.remote);
+    }
+
+    // =========================================================================
+    // v0.1.49 Lifecycle APIs (SessionListFilter, SessionContext, get_session_metadata)
+    // =========================================================================
+
+    #[test]
+    fn test_session_list_filter_default_serializes_empty() {
+        let filter = SessionListFilter::default();
+        let v = serde_json::to_value(&filter).unwrap();
+        // All fields are skip_serializing_if = "Option::is_none", and no booleans,
+        // so an empty filter serializes to {}.
+        assert!(v.is_object());
+        assert_eq!(v.as_object().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_session_list_filter_camel_case_fields() {
+        let filter = SessionListFilter {
+            cwd: Some("/work/repo".into()),
+            git_root: Some("/work/repo".into()),
+            repository: Some("owner/repo".into()),
+            branch: Some("main".into()),
+        };
+        let v = serde_json::to_value(&filter).unwrap();
+        assert_eq!(v["cwd"], "/work/repo");
+        assert_eq!(v["gitRoot"], "/work/repo");
+        assert_eq!(v["repository"], "owner/repo");
+        assert_eq!(v["branch"], "main");
+    }
+
+    #[test]
+    fn test_session_context_deserializes() {
+        let raw = serde_json::json!({
+            "cwd": "/home/u/p",
+            "gitRoot": "/home/u/p",
+            "repository": "octo/p",
+            "branch": "feat/x"
+        });
+        let ctx: crate::types::SessionContext = serde_json::from_value(raw).unwrap();
+        assert_eq!(ctx.cwd, "/home/u/p");
+        assert_eq!(ctx.git_root.as_deref(), Some("/home/u/p"));
+        assert_eq!(ctx.repository.as_deref(), Some("octo/p"));
+        assert_eq!(ctx.branch.as_deref(), Some("feat/x"));
+    }
+
+    #[test]
+    fn test_session_metadata_parses_context() {
+        let raw = serde_json::json!({
+            "sessionId": "sess-1",
+            "isRemote": true,
+            "context": { "cwd": "/w", "repository": "o/r" }
+        });
+        let md: SessionMetadata = serde_json::from_value(raw).unwrap();
+        assert_eq!(md.session_id, "sess-1");
+        assert!(md.is_remote);
+        let ctx = md.context.expect("context should be present");
+        assert_eq!(ctx.cwd, "/w");
+        assert_eq!(ctx.repository.as_deref(), Some("o/r"));
+    }
+
+    #[test]
+    fn test_session_metadata_context_absent_is_none() {
+        let raw = serde_json::json!({
+            "sessionId": "sess-2",
+            "isRemote": false
+        });
+        let md: SessionMetadata = serde_json::from_value(raw).unwrap();
+        assert!(md.context.is_none());
     }
 }

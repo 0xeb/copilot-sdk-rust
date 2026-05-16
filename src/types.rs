@@ -1186,6 +1186,37 @@ impl Clone for ClientOptions {
 // Response Types
 // =============================================================================
 
+/// Working directory context (cwd, git info) from session creation.
+/// Matches upstream nodejs `SessionContext`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionContext {
+    pub cwd: String,
+    #[serde(default)]
+    pub git_root: Option<String>,
+    /// GitHub repository in `owner/repo` format
+    #[serde(default)]
+    pub repository: Option<String>,
+    /// Current git branch
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
+/// Filter passed to `Client::list_sessions_with_filter`. All fields are optional;
+/// only matching sessions are returned. Matches upstream nodejs `SessionListFilter`.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionListFilter {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+}
+
 /// Metadata about a session.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1199,6 +1230,9 @@ pub struct SessionMetadata {
     pub summary: Option<String>,
     #[serde(default)]
     pub is_remote: bool,
+    /// Working directory context from session creation (v0.1.49+).
+    #[serde(default)]
+    pub context: Option<SessionContext>,
 }
 
 /// Response from a ping request.

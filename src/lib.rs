@@ -106,6 +106,7 @@ pub use types::{
     SelectionPosition,
     SelectionRange,
     SessionConfig,
+    SessionContext,
     SessionEndHandler,
     SessionEndHookInput,
     SessionEndHookOutput,
@@ -113,6 +114,7 @@ pub use types::{
     // Session lifecycle types
     SessionLifecycleEvent,
     SessionLifecycleEventMetadata,
+    SessionListFilter,
     SessionLogLevel,
     SessionMetadata,
     SessionMode,
