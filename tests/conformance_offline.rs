@@ -308,10 +308,11 @@ fn message_options_request_permission_uses_explicit_rename() {
 fn tool_result_object_default_factory_serializes_camel_case() {
     let res = ToolResultObject::text("hello");
     let v = serde_json::to_value(&res).unwrap();
-    // NB: serde renames `text_result_for_llm` to `textResultForLlm`
-    // (lowercased acronym). The upstream nodejs SDK emits `textResultForLLM`
-    // (preserving the LLM acronym) — that mismatch is tracked elsewhere;
-    // here we lock in the *current* Rust shape so churn is intentional.
+    // Both the Rust port and the upstream nodejs SDK use `textResultForLlm`
+    // (lowercase `llm`). See `reference/copilot-sdk/nodejs/src/types.ts:241`
+    // and `nodejs/src/generated/rpc.ts:940`. A prior conformance-suite
+    // comment incorrectly claimed upstream emitted `textResultForLLM`; that
+    // was a false alarm — there is no mismatch here.
     assert_eq!(v["textResultForLlm"], "hello");
     assert_eq!(v["resultType"], "success");
     assert!(v.get("error").is_none());
@@ -571,6 +572,118 @@ fn rpc_methods_public_surface_matches_upstream_strings() {
     assert_eq!(
         rpc_methods::SESSION_REMOTE_DISABLE,
         "session.remote.disable"
+    );
+}
+
+/// Regression prevention: scan the SDK's call sites for any residual wire-name
+/// literals inside `invoke(...)` / `(invoke_fn)(...)` calls.
+///
+/// All RPC method names should reach the wire via `rpc_methods::*` constants
+/// (whose values are asserted against upstream in the suite above). A
+/// hand-written literal like `"session.workspace.list_files"` would compile
+/// and pass type checks but talk to a non-existent runtime endpoint.
+///
+/// The check is two-pronged:
+/// 1. A **negative list** of historically-known wrong strings (these were
+///    surfaced during the v0.1.49 sync and fixed). If any of these reappears
+///    anywhere in `src/`, the test fails.
+/// 2. A **heuristic** that flags any literal in an `invoke[_fn]?(...)` call
+///    whose dotted segments after the first contain snake_case — upstream
+///    uses camelCase for verbs and lowercase for namespace tokens, so any
+///    `_` in segment 2+ is suspect.
+#[test]
+fn no_residual_wire_name_literals_in_invoke_calls() {
+    use std::path::PathBuf;
+
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    // ---- 1. Negative list (exact-match) across all src/*.rs files ----
+    //
+    // These are the 8 wire-name bugs surfaced during the v0.1.49 sync.
+    // They must never reappear anywhere in the crate source.
+    const KNOWN_WRONG_NAMES: &[&str] = &[
+        "session.model.get_current",
+        "session.model.switch_to",
+        "session.agent.get_current",
+        "session.compaction.compact",
+        "session.workspace.list_files",
+        "session.workspace.read_file",
+        "session.workspace.create_file",
+        "account.get_quota",
+    ];
+
+    let src_dir = crate_root.join("src");
+    let mut all_offenders: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&src_dir).expect("read src dir") {
+        let entry = entry.expect("dir entry");
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+        for wrong in KNOWN_WRONG_NAMES {
+            let needle = format!("\"{wrong}\"");
+            if content.contains(&needle) {
+                all_offenders.push(format!(
+                    "{}: contains historically-broken literal {:?}",
+                    path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+                    wrong
+                ));
+            }
+        }
+    }
+
+    // ---- 2. Heuristic for new snake_case wire-name mistakes ----
+    //
+    // For client.rs and session.rs, find every invoke() / (invoke_fn)() call
+    // with a string literal and flag dotted method names whose non-first
+    // segments contain underscores.
+    fn extract_invoke_literal(line: &str) -> Option<&str> {
+        let invoke_idx = line.find("invoke")?;
+        let after = &line[invoke_idx..];
+        if !after.contains('(') {
+            return None;
+        }
+        let quote_start = line[invoke_idx..].find('"')?;
+        let abs_start = invoke_idx + quote_start + 1;
+        let quote_end_rel = line[abs_start..].find('"')?;
+        Some(&line[abs_start..abs_start + quote_end_rel])
+    }
+
+    let files = ["src/client.rs", "src/session.rs"];
+    for rel in &files {
+        let path = crate_root.join(rel);
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+        for (lineno, line) in content.lines().enumerate() {
+            let Some(literal) = extract_invoke_literal(line) else {
+                continue;
+            };
+            if !literal.contains('.') {
+                continue;
+            }
+            let segments: Vec<&str> = literal.split('.').collect();
+            if segments.len() >= 2
+                && segments
+                    .iter()
+                    .skip(1)
+                    .any(|seg| seg.chars().any(|c| c == '_'))
+            {
+                all_offenders.push(format!(
+                    "{}:{}: snake_case wire literal {:?} (use rpc_methods::* constant)",
+                    rel,
+                    lineno + 1,
+                    literal
+                ));
+            }
+        }
+    }
+
+    assert!(
+        all_offenders.is_empty(),
+        "Found residual wire-name literals (should use rpc_methods::* constants):\n  {}",
+        all_offenders.join("\n  ")
     );
 }
 

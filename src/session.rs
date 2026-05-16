@@ -699,7 +699,7 @@ impl Session {
     /// Get the current model for this session.
     pub async fn get_model(&self) -> Result<String> {
         let params = serde_json::json!({ "sessionId": self.session_id });
-        let result = (self.invoke_fn)("session.model.get_current", Some(params)).await?;
+        let result = (self.invoke_fn)(rpc_methods::SESSION_MODEL_GET_CURRENT, Some(params)).await?;
         result
             .get("modelId")
             .and_then(|v| v.as_str())
@@ -718,7 +718,7 @@ impl Session {
                 params["reasoningEffort"] = serde_json::json!(effort);
             }
         }
-        (self.invoke_fn)("session.model.switch_to", Some(params)).await?;
+        (self.invoke_fn)(rpc_methods::SESSION_MODEL_SWITCH_TO, Some(params)).await?;
         Ok(())
     }
 
@@ -826,7 +826,7 @@ impl Session {
     /// Get the currently active agent.
     pub async fn get_current_agent(&self) -> Result<Option<AgentInfo>> {
         let params = serde_json::json!({ "sessionId": self.session_id });
-        let result = (self.invoke_fn)("session.agent.get_current", Some(params)).await?;
+        let result = (self.invoke_fn)(rpc_methods::SESSION_AGENT_GET_CURRENT, Some(params)).await?;
         if result.is_null() || result.get("name").is_none() {
             return Ok(None);
         }
@@ -853,13 +853,17 @@ impl Session {
     }
 
     // =========================================================================
-    // Compaction
+    // History (compaction / truncation)
     // =========================================================================
 
-    /// Trigger manual context compaction.
+    /// Trigger manual context compaction (calls `session.history.compact`).
+    ///
+    /// **Wire-name fix (post-v0.1.49 sync)**: previously called
+    /// `session.compaction.compact`, which is a non-existent namespace upstream.
+    /// The Rust public method name `compact()` is preserved for source-compat.
     pub async fn compact(&self) -> Result<()> {
         let params = serde_json::json!({ "sessionId": self.session_id });
-        (self.invoke_fn)("session.compaction.compact", Some(params)).await?;
+        (self.invoke_fn)(rpc_methods::SESSION_HISTORY_COMPACT, Some(params)).await?;
         Ok(())
     }
 
@@ -912,7 +916,8 @@ impl Session {
     /// List files in the session workspace.
     pub async fn workspace_list_files(&self) -> Result<Vec<WorkspaceFile>> {
         let params = serde_json::json!({ "sessionId": self.session_id });
-        let result = (self.invoke_fn)("session.workspace.list_files", Some(params)).await?;
+        let result =
+            (self.invoke_fn)(rpc_methods::SESSION_WORKSPACES_LIST_FILES, Some(params)).await?;
         let files = result
             .get("files")
             .cloned()
@@ -927,7 +932,8 @@ impl Session {
             "sessionId": self.session_id,
             "path": path,
         });
-        let result = (self.invoke_fn)("session.workspace.read_file", Some(params)).await?;
+        let result =
+            (self.invoke_fn)(rpc_methods::SESSION_WORKSPACES_READ_FILE, Some(params)).await?;
         result
             .get("content")
             .and_then(|v| v.as_str())
@@ -942,7 +948,7 @@ impl Session {
             "path": path,
             "content": content,
         });
-        (self.invoke_fn)("session.workspace.create_file", Some(params)).await?;
+        (self.invoke_fn)(rpc_methods::SESSION_WORKSPACES_CREATE_FILE, Some(params)).await?;
         Ok(())
     }
 }

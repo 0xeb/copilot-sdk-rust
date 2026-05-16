@@ -1037,7 +1037,7 @@ impl Client {
     pub async fn get_quota(&self) -> Result<QuotaResult> {
         self.ensure_connected().await?;
 
-        let result = self.invoke("account.get_quota", None).await?;
+        let result = self.invoke(rpc_methods::ACCOUNT_GET_QUOTA, None).await?;
         serde_json::from_value(result)
             .map_err(|e| CopilotError::Protocol(format!("Failed to parse quota result: {}", e)))
     }
