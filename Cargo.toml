@@ -147,3 +147,11 @@ path = "examples/telemetry.rs"
 [[example]]
 name = "shell_exec"
 path = "examples/shell_exec.rs"
+
+[[example]]
+name = "instruction_directories"
+path = "examples/instruction_directories.rs"
+
+[[example]]
+name = "remote_session"
+path = "examples/remote_session.rs"
