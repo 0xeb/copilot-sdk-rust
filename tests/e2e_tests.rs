@@ -1299,9 +1299,8 @@ async fn test_custom_agent_config_on_create() {
         prompt: "You are a helpful test agent.".to_string(),
         display_name: Some("Test Agent".to_string()),
         description: Some("A test agent for SDK testing".to_string()),
-        tools: None,
-        mcp_servers: None,
         infer: Some(true),
+        ..Default::default()
     };
 
     let config = SessionConfig {

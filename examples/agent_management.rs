@@ -17,9 +17,7 @@ async fn main() -> copilot_sdk::Result<()> {
                 prompt: "You are a code review expert.".into(),
                 display_name: Some("Code Reviewer".into()),
                 description: Some("Reviews code for bugs and improvements".into()),
-                tools: None,
-                mcp_servers: None,
-                infer: None,
+                ..Default::default()
             }]),
             ..Default::default()
         })

@@ -168,9 +168,8 @@ async fn test_list_agents() {
                 prompt: "You are a test agent.".into(),
                 display_name: Some("Test Agent".into()),
                 description: Some("For testing".into()),
-                tools: None,
-                mcp_servers: None,
                 infer: Some(true),
+                ..Default::default()
             }]),
             ..byok_session_config()
         })
@@ -213,10 +212,8 @@ async fn test_select_and_deselect_agent() {
                 name: "my-agent".into(),
                 prompt: "You are helpful.".into(),
                 display_name: Some("My Agent".into()),
-                description: None,
-                tools: None,
-                mcp_servers: None,
                 infer: Some(true),
+                ..Default::default()
             }]),
             ..byok_session_config()
         })
@@ -395,11 +392,8 @@ async fn test_session_with_agent_option() {
             custom_agents: Some(vec![CustomAgentConfig {
                 name: "starter-agent".into(),
                 prompt: "You are a starter agent.".into(),
-                display_name: None,
-                description: None,
-                tools: None,
-                mcp_servers: None,
                 infer: Some(true),
+                ..Default::default()
             }]),
             agent: Some("starter-agent".into()),
             ..byok_session_config()

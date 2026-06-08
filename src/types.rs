@@ -406,6 +406,77 @@ pub struct CustomAgentConfig {
     pub mcp_servers: Option<HashMap<String, serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub infer: Option<bool>,
+    /// Skill names to preload into this agent's context at startup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
+    /// Model identifier for this agent (e.g. `"claude-haiku-4.5"`).
+    ///
+    /// When set, the runtime will attempt to use this model for the agent,
+    /// falling back to the parent session model if unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+impl CustomAgentConfig {
+    /// Construct a custom agent configuration with the required `name`
+    /// and `prompt` fields populated.
+    pub fn new(name: impl Into<String>, prompt: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            prompt: prompt.into(),
+            ..Self::default()
+        }
+    }
+
+    /// Set the display name shown in the CLI's agent-selection UI.
+    pub fn with_display_name(mut self, display_name: impl Into<String>) -> Self {
+        self.display_name = Some(display_name.into());
+        self
+    }
+
+    /// Set the description of what the agent does.
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    /// Restrict the agent to a specific tool allowlist.
+    pub fn with_tools<I, S>(mut self, tools: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.tools = Some(tools.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Configure agent-specific MCP servers.
+    pub fn with_mcp_servers(mut self, mcp_servers: HashMap<String, serde_json::Value>) -> Self {
+        self.mcp_servers = Some(mcp_servers);
+        self
+    }
+
+    /// Whether the agent participates in model inference.
+    pub fn with_infer(mut self, infer: bool) -> Self {
+        self.infer = Some(infer);
+        self
+    }
+
+    /// Set the skills preloaded into the agent's context at startup.
+    pub fn with_skills<I, S>(mut self, skills: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.skills = Some(skills.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Set the model identifier for this agent.
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
 }
 
 // =============================================================================
@@ -2304,5 +2375,30 @@ mod tests {
         assert_eq!(v["clientName"], "my-app");
         assert_eq!(v["instructionDirectories"], serde_json::json!(["/x"]));
         assert_eq!(v["remoteSession"], "on");
+    }
+
+    #[test]
+    fn custom_agent_config_builder_with_model() {
+        let agent = CustomAgentConfig::new("my-agent", "You are helpful.")
+            .with_model("claude-haiku-4.5")
+            .with_display_name("My Agent");
+        assert_eq!(agent.name, "my-agent");
+        assert_eq!(agent.model.as_deref(), Some("claude-haiku-4.5"));
+        assert_eq!(agent.display_name.as_deref(), Some("My Agent"));
+    }
+
+    #[test]
+    fn custom_agent_config_serializes_model() {
+        let agent = CustomAgentConfig::new("model-agent", "prompt").with_model("claude-haiku-4.5");
+        let wire = serde_json::to_value(&agent).unwrap();
+        assert_eq!(wire["model"], "claude-haiku-4.5");
+        assert_eq!(wire["name"], "model-agent");
+    }
+
+    #[test]
+    fn custom_agent_config_omits_model_when_none() {
+        let agent = CustomAgentConfig::new("no-model-agent", "prompt");
+        let wire = serde_json::to_value(&agent).unwrap();
+        assert!(wire.get("model").is_none());
     }
 }

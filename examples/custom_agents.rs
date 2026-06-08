@@ -14,33 +14,23 @@ async fn main() -> copilot_sdk::Result<()> {
     client.start().await?;
 
     // Define custom agents
-    let code_reviewer = CustomAgentConfig {
-        name: "code-reviewer".to_string(),
-        display_name: Some("Code Reviewer".to_string()),
-        description: Some("Reviews code for bugs and best practices".to_string()),
-        prompt:
-            "You are a code reviewer. Look for bugs, security issues, and suggest improvements."
-                .to_string(),
-        tools: Some(vec![
-            "Read".to_string(),
-            "Glob".to_string(),
-            "Grep".to_string(),
-        ]),
-        mcp_servers: None,
-        infer: Some(true),
-    };
+    let code_reviewer = CustomAgentConfig::new(
+        "code-reviewer",
+        "You are a code reviewer. Look for bugs, security issues, and suggest improvements.",
+    )
+    .with_display_name("Code Reviewer")
+    .with_description("Reviews code for bugs and best practices")
+    .with_tools(["Read", "Glob", "Grep"])
+    .with_infer(true);
 
-    let security_auditor = CustomAgentConfig {
-        name: "security-auditor".to_string(),
-        display_name: Some("Security Auditor".to_string()),
-        description: Some("Audits code for security vulnerabilities".to_string()),
-        prompt:
-            "You are a security expert. Focus on OWASP Top 10, input validation, and auth issues."
-                .to_string(),
-        tools: Some(vec!["Read".to_string(), "Grep".to_string()]),
-        mcp_servers: None,
-        infer: Some(false), // Must use @security-auditor
-    };
+    let security_auditor = CustomAgentConfig::new(
+        "security-auditor",
+        "You are a security expert. Focus on OWASP Top 10, input validation, and auth issues.",
+    )
+    .with_display_name("Security Auditor")
+    .with_description("Audits code for security vulnerabilities")
+    .with_tools(["Read", "Grep"])
+    .with_infer(false);
 
     let config = SessionConfig {
         custom_agents: Some(vec![code_reviewer, security_auditor]),
