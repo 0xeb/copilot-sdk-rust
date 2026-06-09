@@ -11,7 +11,7 @@
 //! - Type-safe parameter extraction
 //! - Concise, readable syntax
 
-use copilot_sdk::{Client, SessionConfig, SessionEventData, Tool, ToolResultObject};
+use copilot_sdk::{Client, SessionConfig, SessionEventData, Tool, ToolResult};
 use std::sync::Arc;
 
 #[tokio::main]
@@ -97,15 +97,15 @@ async fn main() -> copilot_sdk::Result<()> {
                     "multiply" => (a * b, "*"),
                     "divide" => {
                         if b == 0.0 {
-                            return ToolResultObject::text("Error: Division by zero");
+                            return ToolResult::text("Error: Division by zero");
                         }
                         (a / b, "/")
                     }
                     "power" => (a.powf(b), "^"),
-                    _ => return ToolResultObject::text(format!("Unknown operation: {op}")),
+                    _ => return ToolResult::text(format!("Unknown operation: {op}")),
                 };
 
-                ToolResultObject::text(format!("{a} {symbol} {b} = {result}"))
+                ToolResult::text(format!("{a} {symbol} {b} = {result}"))
             })),
         )
         .await;
@@ -119,7 +119,7 @@ async fn main() -> copilot_sdk::Result<()> {
                     .and_then(|v| v.as_str())
                     .unwrap_or("local");
                 let now = chrono::Local::now();
-                ToolResultObject::text(format!("Current time ({tz}): {now}"))
+                ToolResult::text(format!("Current time ({tz}): {now}"))
             })),
         )
         .await;
@@ -132,7 +132,7 @@ async fn main() -> copilot_sdk::Result<()> {
                     .get("message")
                     .and_then(|v| v.as_str())
                     .unwrap_or("(empty)");
-                ToolResultObject::text(format!("Echo: {msg}"))
+                ToolResult::text(format!("Echo: {msg}"))
             })),
         )
         .await;
@@ -144,7 +144,7 @@ async fn main() -> copilot_sdk::Result<()> {
                 let min = args.get("min").and_then(|v| v.as_i64()).unwrap_or(0);
                 let max = args.get("max").and_then(|v| v.as_i64()).unwrap_or(100);
                 let result = min + (rand::random::<i64>().abs() % (max - min + 1));
-                ToolResultObject::text(format!("{result}"))
+                ToolResult::text(format!("{result}"))
             })),
         )
         .await;

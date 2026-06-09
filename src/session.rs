@@ -7,13 +7,15 @@
 
 use crate::error::{CopilotError, Result};
 use crate::events::{SessionEvent, SessionEventData};
+use crate::rpc_methods;
 use crate::types::{
-    AgentInfo, ErrorOccurredHookInput, FleetStartOptions, LogOptions, LogResult, MessageOptions,
-    PermissionRequest, PermissionRequestResult, PlanData, PostToolUseHookInput,
-    PreToolUseHookInput, SessionEndHookInput, SessionHooks, SessionMode, SessionStartHookInput,
-    SetModelOptions, ShellExecOptions, ShellExecResult, ShellSignal, Tool, ToolResultObject,
-    UserInputInvocation, UserInputRequest, UserInputResponse, UserPromptSubmittedHookInput,
-    WorkspaceFile,
+    AgentInfo, AutoModeSwitchResponse, ElicitationRequest, ElicitationResult,
+    ErrorOccurredHookInput, ExitPlanModeData, ExitPlanModeResult, FleetStartOptions, LogOptions,
+    LogResult, MessageOptions, PermissionRequest, PermissionRequestResult, PlanData,
+    PostToolUseHookInput, PreToolUseHookInput, SessionEndHookInput, SessionHooks, SessionMode,
+    SessionStartHookInput, SetModelOptions, ShellExecOptions, ShellExecResult, ShellSignal, Tool,
+    ToolResult, UserInputInvocation, UserInputRequest, UserInputResponse,
+    UserPromptSubmittedHookInput, WorkspaceFile,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -34,11 +36,21 @@ pub type PermissionHandler =
     Arc<dyn Fn(&PermissionRequest) -> PermissionRequestResult + Send + Sync>;
 
 /// Handler for tool invocations.
-pub type ToolHandler = Arc<dyn Fn(&str, &Value) -> ToolResultObject + Send + Sync>;
+pub type ToolHandler = Arc<dyn Fn(&str, &Value) -> ToolResult + Send + Sync>;
 
 /// Handler for user input requests.
 pub type UserInputHandler =
     Arc<dyn Fn(&UserInputRequest, &UserInputInvocation) -> UserInputResponse + Send + Sync>;
+
+/// Handler for elicitation requests.
+pub type ElicitationHandler = Arc<dyn Fn(&ElicitationRequest) -> ElicitationResult + Send + Sync>;
+
+/// Handler for exit-plan-mode requests.
+pub type ExitPlanModeHandler = Arc<dyn Fn(&ExitPlanModeData) -> ExitPlanModeResult + Send + Sync>;
+
+/// Handler for auto-mode-switch requests.
+pub type AutoModeSwitchHandler =
+    Arc<dyn Fn(Option<&str>, Option<f64>) -> AutoModeSwitchResponse + Send + Sync>;
 
 /// Type alias for the invoke future.
 pub type InvokeFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send>>;
@@ -88,6 +100,12 @@ struct SessionState {
     permission_handler: Option<PermissionHandler>,
     /// User input handler.
     user_input_handler: Option<UserInputHandler>,
+    /// Elicitation handler.
+    elicitation_handler: Option<ElicitationHandler>,
+    /// Exit plan mode handler.
+    exit_plan_mode_handler: Option<ExitPlanModeHandler>,
+    /// Auto mode switch handler.
+    auto_mode_switch_handler: Option<AutoModeSwitchHandler>,
     /// Session hooks.
     hooks: Option<SessionHooks>,
     /// Callback-based event handlers.
@@ -160,6 +178,9 @@ impl Session {
                 tools: HashMap::new(),
                 permission_handler: None,
                 user_input_handler: None,
+                elicitation_handler: None,
+                exit_plan_mode_handler: None,
+                auto_mode_switch_handler: None,
                 hooks: None,
                 event_handlers: HashMap::new(),
                 next_handler_id: AtomicU64::new(1),
@@ -273,29 +294,29 @@ impl Session {
                 // Execute tool and respond via handlePendingToolCall RPC
                 match self.invoke_tool(&tool_name, &arguments).await {
                     Ok(result) => {
-                        // If the tool reported a failure with an error, send via top-level error
-                        let params = if result.result_type == "failure"
-                            || result.result_type == "error"
-                        {
-                            serde_json::json!({
+                        // If the tool reported a failure with an error, send via top-level error.
+                        let params = match &result {
+                            ToolResult::Expanded(expanded)
+                                if expanded.result_type == "failure"
+                                    || expanded.result_type == "error" =>
+                            {
+                                serde_json::json!({
+                                    "sessionId": session_id,
+                                    "requestId": request_id,
+                                    "error": expanded.error.clone().unwrap_or_else(|| expanded.text_result_for_llm.clone()),
+                                })
+                            }
+                            _ => serde_json::json!({
                                 "sessionId": session_id,
                                 "requestId": request_id,
-                                "error": result.error.unwrap_or_else(|| result.text_result_for_llm.clone()),
-                            })
-                        } else {
-                            serde_json::json!({
-                                "sessionId": session_id,
-                                "requestId": request_id,
-                                "result": {
-                                    "textResultForLlm": result.text_result_for_llm,
-                                    "resultType": result.result_type,
-                                    "toolTelemetry": result.tool_telemetry.unwrap_or_default(),
-                                }
-                            })
+                                "result": serde_json::to_value(&result).unwrap_or(Value::Null),
+                            }),
                         };
-                        let _ =
-                            (self.invoke_fn)("session.tools.handlePendingToolCall", Some(params))
-                                .await;
+                        let _ = (self.invoke_fn)(
+                            rpc_methods::SESSION_TOOLS_HANDLE_PENDING_TOOL_CALL,
+                            Some(params),
+                        )
+                        .await;
                     }
                     Err(e) => {
                         let params = serde_json::json!({
@@ -303,9 +324,11 @@ impl Session {
                             "requestId": request_id,
                             "error": e.to_string(),
                         });
-                        let _ =
-                            (self.invoke_fn)("session.tools.handlePendingToolCall", Some(params))
-                                .await;
+                        let _ = (self.invoke_fn)(
+                            rpc_methods::SESSION_TOOLS_HANDLE_PENDING_TOOL_CALL,
+                            Some(params),
+                        )
+                        .await;
                     }
                 }
             }
@@ -362,7 +385,7 @@ impl Session {
                 });
 
                 let _ = (self.invoke_fn)(
-                    "session.permissions.handlePendingPermissionRequest",
+                    rpc_methods::SESSION_PERMISSIONS_HANDLE_PENDING_PERMISSION_REQUEST,
                     Some(perm_result),
                 )
                 .await;
@@ -483,7 +506,7 @@ impl Session {
     }
 
     /// Invoke a tool handler.
-    pub async fn invoke_tool(&self, name: &str, arguments: &Value) -> Result<ToolResultObject> {
+    pub async fn invoke_tool(&self, name: &str, arguments: &Value) -> Result<ToolResult> {
         let state = self.state.read().await;
         let registered = state
             .tools
@@ -557,6 +580,88 @@ impl Session {
             Err(CopilotError::Protocol(
                 "No user input handler registered".into(),
             ))
+        }
+    }
+
+    // =========================================================================
+    // Elicitation Handling
+    // =========================================================================
+
+    /// Register a handler for elicitation requests.
+    pub async fn register_elicitation_handler<F>(&self, handler: F)
+    where
+        F: Fn(&ElicitationRequest) -> ElicitationResult + Send + Sync + 'static,
+    {
+        let mut state = self.state.write().await;
+        state.elicitation_handler = Some(Arc::new(handler));
+    }
+
+    /// Handle an elicitation request.
+    pub async fn handle_elicitation_request(
+        &self,
+        request: &ElicitationRequest,
+    ) -> ElicitationResult {
+        let state = self.state.read().await;
+        if let Some(handler) = &state.elicitation_handler {
+            handler(request)
+        } else {
+            ElicitationResult {
+                action: "cancel".to_string(),
+                content: None,
+            }
+        }
+    }
+
+    // =========================================================================
+    // Exit Plan Mode Handling
+    // =========================================================================
+
+    /// Register a handler for exit-plan-mode requests.
+    pub async fn register_exit_plan_mode_handler<F>(&self, handler: F)
+    where
+        F: Fn(&ExitPlanModeData) -> ExitPlanModeResult + Send + Sync + 'static,
+    {
+        let mut state = self.state.write().await;
+        state.exit_plan_mode_handler = Some(Arc::new(handler));
+    }
+
+    /// Handle an exit-plan-mode request.
+    pub async fn handle_exit_plan_mode_request(
+        &self,
+        data: &ExitPlanModeData,
+    ) -> ExitPlanModeResult {
+        let state = self.state.read().await;
+        if let Some(handler) = &state.exit_plan_mode_handler {
+            handler(data)
+        } else {
+            ExitPlanModeResult::default()
+        }
+    }
+
+    // =========================================================================
+    // Auto Mode Switch Handling
+    // =========================================================================
+
+    /// Register a handler for auto-mode-switch requests.
+    pub async fn register_auto_mode_switch_handler<F>(&self, handler: F)
+    where
+        F: Fn(Option<&str>, Option<f64>) -> AutoModeSwitchResponse + Send + Sync + 'static,
+    {
+        let mut state = self.state.write().await;
+        state.auto_mode_switch_handler = Some(Arc::new(handler));
+    }
+
+    /// Handle an auto-mode-switch request.
+    pub async fn handle_auto_mode_switch_request(
+        &self,
+        error_code: Option<&str>,
+        retry_after_seconds: Option<f64>,
+    ) -> AutoModeSwitchResponse {
+        let state = self.state.read().await;
+        if let Some(handler) = &state.auto_mode_switch_handler {
+            handler(error_code, retry_after_seconds)
+        } else {
+            AutoModeSwitchResponse::No
         }
     }
 
@@ -694,7 +799,7 @@ impl Session {
     /// Get the current model for this session.
     pub async fn get_model(&self) -> Result<String> {
         let params = serde_json::json!({ "sessionId": self.session_id });
-        let result = (self.invoke_fn)("session.model.get_current", Some(params)).await?;
+        let result = (self.invoke_fn)(rpc_methods::SESSION_MODEL_GET_CURRENT, Some(params)).await?;
         result
             .get("modelId")
             .and_then(|v| v.as_str())
@@ -713,7 +818,7 @@ impl Session {
                 params["reasoningEffort"] = serde_json::json!(effort);
             }
         }
-        (self.invoke_fn)("session.model.switch_to", Some(params)).await?;
+        (self.invoke_fn)(rpc_methods::SESSION_MODEL_SWITCH_TO, Some(params)).await?;
         Ok(())
     }
 
@@ -724,7 +829,7 @@ impl Session {
     /// Get the current session mode.
     pub async fn get_mode(&self) -> Result<SessionMode> {
         let params = serde_json::json!({ "sessionId": self.session_id });
-        let result = (self.invoke_fn)("session.mode.get", Some(params)).await?;
+        let result = (self.invoke_fn)(rpc_methods::SESSION_MODE_GET, Some(params)).await?;
         let mode_str = result
             .get("mode")
             .and_then(|v| v.as_str())
@@ -739,7 +844,7 @@ impl Session {
             "sessionId": self.session_id,
             "mode": mode,
         });
-        (self.invoke_fn)("session.mode.set", Some(params)).await?;
+        (self.invoke_fn)(rpc_methods::SESSION_MODE_SET, Some(params)).await?;
         Ok(())
     }
 
@@ -761,7 +866,7 @@ impl Session {
                 params["ephemeral"] = serde_json::json!(ephemeral);
             }
         }
-        let result = (self.invoke_fn)("session.log", Some(params)).await?;
+        let result = (self.invoke_fn)(rpc_methods::SESSION_LOG, Some(params)).await?;
         let event_id = result
             .get("eventId")
             .and_then(|v| v.as_str())
@@ -777,7 +882,7 @@ impl Session {
     /// Read the current plan.
     pub async fn read_plan(&self) -> Result<Option<PlanData>> {
         let params = serde_json::json!({ "sessionId": self.session_id });
-        let result = (self.invoke_fn)("session.plan.read", Some(params)).await?;
+        let result = (self.invoke_fn)(rpc_methods::SESSION_PLAN_READ, Some(params)).await?;
         if result.is_null() || result.get("content").is_none() {
             return Ok(None);
         }
@@ -791,14 +896,14 @@ impl Session {
         let mut params = serde_json::to_value(plan)
             .map_err(|e| CopilotError::Protocol(format!("Failed to serialize plan: {}", e)))?;
         params["sessionId"] = serde_json::json!(self.session_id);
-        (self.invoke_fn)("session.plan.update", Some(params)).await?;
+        (self.invoke_fn)(rpc_methods::SESSION_PLAN_UPDATE, Some(params)).await?;
         Ok(())
     }
 
     /// Delete the session plan.
     pub async fn delete_plan(&self) -> Result<()> {
         let params = serde_json::json!({ "sessionId": self.session_id });
-        (self.invoke_fn)("session.plan.delete", Some(params)).await?;
+        (self.invoke_fn)(rpc_methods::SESSION_PLAN_DELETE, Some(params)).await?;
         Ok(())
     }
 
@@ -809,7 +914,7 @@ impl Session {
     /// List available agents.
     pub async fn list_agents(&self) -> Result<Vec<AgentInfo>> {
         let params = serde_json::json!({ "sessionId": self.session_id });
-        let result = (self.invoke_fn)("session.agent.list", Some(params)).await?;
+        let result = (self.invoke_fn)(rpc_methods::SESSION_AGENT_LIST, Some(params)).await?;
         let agents = result
             .get("agents")
             .cloned()
@@ -821,7 +926,7 @@ impl Session {
     /// Get the currently active agent.
     pub async fn get_current_agent(&self) -> Result<Option<AgentInfo>> {
         let params = serde_json::json!({ "sessionId": self.session_id });
-        let result = (self.invoke_fn)("session.agent.get_current", Some(params)).await?;
+        let result = (self.invoke_fn)(rpc_methods::SESSION_AGENT_GET_CURRENT, Some(params)).await?;
         if result.is_null() || result.get("name").is_none() {
             return Ok(None);
         }
@@ -836,25 +941,29 @@ impl Session {
             "sessionId": self.session_id,
             "name": name,
         });
-        (self.invoke_fn)("session.agent.select", Some(params)).await?;
+        (self.invoke_fn)(rpc_methods::SESSION_AGENT_SELECT, Some(params)).await?;
         Ok(())
     }
 
     /// Deselect the current custom agent.
     pub async fn deselect_agent(&self) -> Result<()> {
         let params = serde_json::json!({ "sessionId": self.session_id });
-        (self.invoke_fn)("session.agent.deselect", Some(params)).await?;
+        (self.invoke_fn)(rpc_methods::SESSION_AGENT_DESELECT, Some(params)).await?;
         Ok(())
     }
 
     // =========================================================================
-    // Compaction
+    // History (compaction / truncation)
     // =========================================================================
 
-    /// Trigger manual context compaction.
+    /// Trigger manual context compaction (calls `session.history.compact`).
+    ///
+    /// **Wire-name fix (post-v0.1.49 sync)**: previously called
+    /// `session.compaction.compact`, which is a non-existent namespace upstream.
+    /// The Rust public method name `compact()` is preserved for source-compat.
     pub async fn compact(&self) -> Result<()> {
         let params = serde_json::json!({ "sessionId": self.session_id });
-        (self.invoke_fn)("session.compaction.compact", Some(params)).await?;
+        (self.invoke_fn)(rpc_methods::SESSION_HISTORY_COMPACT, Some(params)).await?;
         Ok(())
     }
 
@@ -870,7 +979,7 @@ impl Session {
                 params["prompt"] = serde_json::json!(prompt);
             }
         }
-        (self.invoke_fn)("session.fleet.start", Some(params)).await?;
+        (self.invoke_fn)(rpc_methods::SESSION_FLEET_START, Some(params)).await?;
         Ok(())
     }
 
@@ -884,7 +993,7 @@ impl Session {
             CopilotError::Protocol(format!("Failed to serialize shell options: {}", e))
         })?;
         params["sessionId"] = serde_json::json!(self.session_id);
-        let result = (self.invoke_fn)("session.shell.exec", Some(params)).await?;
+        let result = (self.invoke_fn)(rpc_methods::SESSION_SHELL_EXEC, Some(params)).await?;
         serde_json::from_value(result)
             .map_err(|e| CopilotError::Protocol(format!("Failed to parse shell result: {}", e)))
     }
@@ -896,7 +1005,7 @@ impl Session {
             "processId": process_id,
             "signal": signal,
         });
-        (self.invoke_fn)("session.shell.kill", Some(params)).await?;
+        (self.invoke_fn)(rpc_methods::SESSION_SHELL_KILL, Some(params)).await?;
         Ok(())
     }
 
@@ -907,7 +1016,8 @@ impl Session {
     /// List files in the session workspace.
     pub async fn workspace_list_files(&self) -> Result<Vec<WorkspaceFile>> {
         let params = serde_json::json!({ "sessionId": self.session_id });
-        let result = (self.invoke_fn)("session.workspace.list_files", Some(params)).await?;
+        let result =
+            (self.invoke_fn)(rpc_methods::SESSION_WORKSPACES_LIST_FILES, Some(params)).await?;
         let files = result
             .get("files")
             .cloned()
@@ -922,7 +1032,8 @@ impl Session {
             "sessionId": self.session_id,
             "path": path,
         });
-        let result = (self.invoke_fn)("session.workspace.read_file", Some(params)).await?;
+        let result =
+            (self.invoke_fn)(rpc_methods::SESSION_WORKSPACES_READ_FILE, Some(params)).await?;
         result
             .get("content")
             .and_then(|v| v.as_str())
@@ -937,7 +1048,7 @@ impl Session {
             "path": path,
             "content": content,
         });
-        (self.invoke_fn)("session.workspace.create_file", Some(params)).await?;
+        (self.invoke_fn)(rpc_methods::SESSION_WORKSPACES_CREATE_FILE, Some(params)).await?;
         Ok(())
     }
 }
@@ -1129,7 +1240,7 @@ mod tests {
         let tool = Tool::new("echo").description("Echo tool");
         let handler: ToolHandler = Arc::new(|_name, args| {
             let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("empty");
-            ToolResultObject::text(text)
+            ToolResult::text(text)
         });
 
         session
@@ -1141,7 +1252,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result.text_result_for_llm, "hello");
+        assert!(matches!(result, ToolResult::Text(ref text) if text == "hello"));
     }
 
     #[tokio::test]
@@ -1248,7 +1359,7 @@ mod tests {
             .register_tool_with_handler(
                 Tool::new("echo").description("Echo tool"),
                 Some(Arc::new(|_name, args| {
-                    ToolResultObject::text(
+                    ToolResult::text(
                         args.get("text")
                             .and_then(|v| v.as_str())
                             .unwrap_or("missing"),
@@ -1283,8 +1394,7 @@ mod tests {
         assert_eq!(calls[0].0, "session.tools.handlePendingToolCall");
         assert_eq!(calls[0].1["sessionId"], "test");
         assert_eq!(calls[0].1["requestId"], "req-tool-1");
-        assert_eq!(calls[0].1["result"]["textResultForLlm"], "hello");
-        assert_eq!(calls[0].1["result"]["resultType"], "success");
+        assert_eq!(calls[0].1["result"], "hello");
     }
 
     #[tokio::test]
@@ -1397,6 +1507,97 @@ mod tests {
 
         let result = session.handle_user_input_request(&request).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_callback_handlers_default_and_registered() {
+        let session = Session::new("test".to_string(), None, mock_invoke);
+
+        let default_elicitation = session
+            .handle_elicitation_request(&ElicitationRequest {
+                message: "Provide details".into(),
+                requested_schema: None,
+                mode: Some(crate::types::ElicitationMode::Form),
+                elicitation_source: None,
+                url: None,
+            })
+            .await;
+        assert_eq!(default_elicitation.action, "cancel");
+        assert!(default_elicitation.content.is_none());
+
+        let default_exit = session
+            .handle_exit_plan_mode_request(&ExitPlanModeData {
+                summary: "summary".into(),
+                plan_content: None,
+                actions: vec!["autopilot".into()],
+                recommended_action: "autopilot".into(),
+            })
+            .await;
+        assert!(default_exit.approved);
+        assert!(default_exit.selected_action.is_none());
+        assert!(default_exit.feedback.is_none());
+
+        assert_eq!(
+            session
+                .handle_auto_mode_switch_request(Some("rate_limited"), Some(30.0))
+                .await,
+            AutoModeSwitchResponse::No
+        );
+
+        session
+            .register_elicitation_handler(|request| ElicitationResult {
+                action: "accept".into(),
+                content: Some(serde_json::json!({
+                    "message": request.message,
+                    "mode": request.mode.as_ref().map(|mode| serde_json::to_value(mode).unwrap()),
+                })),
+            })
+            .await;
+        session
+            .register_exit_plan_mode_handler(|data| ExitPlanModeResult {
+                approved: false,
+                selected_action: Some(data.recommended_action.clone()),
+                feedback: Some(data.summary.clone()),
+            })
+            .await;
+        session
+            .register_auto_mode_switch_handler(|error_code, retry_after_seconds| {
+                assert_eq!(error_code, Some("rate_limited"));
+                assert_eq!(retry_after_seconds, Some(45.0));
+                AutoModeSwitchResponse::YesAlways
+            })
+            .await;
+
+        let elicitation = session
+            .handle_elicitation_request(&ElicitationRequest {
+                message: "Provide details".into(),
+                requested_schema: Some(serde_json::json!({"type": "object"})),
+                mode: Some(crate::types::ElicitationMode::Form),
+                elicitation_source: Some("mcp".into()),
+                url: None,
+            })
+            .await;
+        assert_eq!(elicitation.action, "accept");
+        assert_eq!(elicitation.content.unwrap()["message"], "Provide details");
+
+        let exit = session
+            .handle_exit_plan_mode_request(&ExitPlanModeData {
+                summary: "Need confirmation".into(),
+                plan_content: Some("# Plan".into()),
+                actions: vec!["chat".into(), "autopilot".into()],
+                recommended_action: "chat".into(),
+            })
+            .await;
+        assert!(!exit.approved);
+        assert_eq!(exit.selected_action.as_deref(), Some("chat"));
+        assert_eq!(exit.feedback.as_deref(), Some("Need confirmation"));
+
+        assert_eq!(
+            session
+                .handle_auto_mode_switch_request(Some("rate_limited"), Some(45.0))
+                .await,
+            AutoModeSwitchResponse::YesAlways
+        );
     }
 
     #[tokio::test]

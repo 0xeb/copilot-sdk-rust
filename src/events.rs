@@ -137,7 +137,12 @@ pub struct SessionErrorData {
 
 /// Data for session.idle event.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct SessionIdleData {}
+#[serde(rename_all = "camelCase")]
+pub struct SessionIdleData {
+    /// True when the preceding agentic loop was cancelled via abort signal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aborted: Option<bool>,
+}
 
 /// Data for session.info event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,6 +150,155 @@ pub struct SessionIdleData {}
 pub struct SessionInfoData {
     pub info_type: String,
     pub message: String,
+    /// Optional actionable tip displayed with this message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tip: Option<String>,
+    /// Optional URL associated with this message that the user can open in a browser.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+/// Data for `session.warning` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionWarningData {
+    /// Category of warning (e.g., "subscription", "policy", "mcp").
+    pub warning_type: String,
+    /// Human-readable warning message for display in the timeline.
+    pub message: String,
+    /// Optional URL associated with this warning that the user can open in a browser.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+/// Data for `session.remote_steerable_changed` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRemoteSteerableChangedData {
+    /// Whether this session now supports remote steering via GitHub.
+    pub remote_steerable: bool,
+}
+
+/// Data for `session.title_changed` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTitleChangedData {
+    /// The new display title for the session.
+    pub title: String,
+}
+
+/// Data for `session.schedule_created` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionScheduleCreatedData {
+    /// Sequential id assigned to the scheduled prompt within the session.
+    pub id: f64,
+    /// Prompt text that gets enqueued on every tick.
+    pub prompt: String,
+    /// Interval between ticks in milliseconds.
+    pub interval_ms: f64,
+    /// Optional user-facing label shown in the timeline instead of the actual prompt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_prompt: Option<String>,
+    /// Whether the schedule re-arms after each tick (`/every`) or fires once (`/after`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recurring: Option<bool>,
+}
+
+/// Data for `session.schedule_cancelled` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionScheduleCancelledData {
+    /// Id of the scheduled prompt that was cancelled.
+    pub id: f64,
+}
+
+/// Operation applied to the plan file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlanChangedOperation {
+    Create,
+    Update,
+    Delete,
+}
+
+/// Data for `session.plan_changed` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionPlanChangedData {
+    pub operation: PlanChangedOperation,
+}
+
+/// Operation applied to a workspace file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkspaceFileChangedOperation {
+    Create,
+    Update,
+}
+
+/// Data for `session.workspace_file_changed` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionWorkspaceFileChangedData {
+    pub operation: WorkspaceFileChangedOperation,
+    /// Relative path within the session workspace files directory.
+    pub path: String,
+}
+
+/// Mode descriptor for `session.mode_changed` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionModeChangedData {
+    /// Agent mode before the change (e.g., "interactive", "plan", "autopilot").
+    pub previous_mode: String,
+    /// Agent mode after the change.
+    pub new_mode: String,
+}
+
+/// Hosting platform type of the working directory's repository.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkingDirectoryHostType {
+    Github,
+    Ado,
+}
+
+/// Working-directory context shared by `session.context_changed` and `session.resume`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkingDirectoryContext {
+    /// Current working directory path.
+    #[serde(default)]
+    pub cwd: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head_commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_type: Option<WorkingDirectoryHostType>,
+    /// Repository identifier derived from the git remote URL (e.g., "owner/name").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
+    /// Raw host string from the git remote URL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository_host: Option<String>,
+}
+
+/// Data for `session.task_complete` event.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTaskCompleteData {
+    /// Whether the tool call succeeded. False when validation failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub success: Option<bool>,
+    /// Summary of the completed task, provided by the agent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 /// Data for session.model_change event.
@@ -556,6 +710,481 @@ pub struct SkillInvokedData {
 // Session Event (Discriminated Union)
 // =============================================================================
 
+/// Data for `assistant.streaming_delta` event (cumulative byte count).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssistantStreamingDeltaData {
+    /// Cumulative total bytes received from the streaming response so far.
+    pub total_response_size_bytes: f64,
+}
+
+/// Data for `assistant.message_start` event (streaming message announce).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssistantMessageStartData {
+    pub message_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+}
+
+/// Source of a failed model call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelCallFailureSource {
+    TopLevel,
+    Subagent,
+    McpSampling,
+}
+
+/// Data for `model.call_failure` event (telemetry-only).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCallFailureData {
+    pub source: ModelCallFailureSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initiator: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_code: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+}
+
+/// Data for `subagent.deselected` event (empty payload).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SubagentDeselectedData {}
+
+/// Data for `system.notification` event. `kind` is preserved as raw JSON
+/// because its shape varies by notification subtype (agent_completed,
+/// agent_idle, new_inbox_message, shell_completed, shell_detached_completed,
+/// instruction_discovered).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemNotificationData {
+    /// The notification text, typically wrapped in `<system_notification>` XML tags.
+    pub content: String,
+    /// Structured metadata identifying what triggered this notification.
+    pub kind: serde_json::Value,
+}
+
+/// Data for `permission.completed` event. The `result` payload is preserved as
+/// raw JSON because its shape varies across the `PermissionResult` union.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionCompletedData {
+    pub request_id: String,
+    pub result: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+/// Data for `user_input.requested` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserInputRequestedData {
+    pub request_id: String,
+    /// The question or prompt to present to the user.
+    pub question: String,
+    /// Predefined choices for the user to select from, if applicable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub choices: Option<Vec<String>>,
+    /// Whether the user can provide a free-form text response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_freeform: Option<bool>,
+    /// LLM-assigned tool call ID that triggered this request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+/// Data for `user_input.completed` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserInputCompletedData {
+    pub request_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub was_freeform: Option<bool>,
+}
+
+/// Elicitation mode (form-based or URL-based).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ElicitationRequestedMode {
+    Form,
+    Url,
+}
+
+/// Data for `elicitation.requested` event. The `requestedSchema` field is preserved
+/// as raw JSON because its `properties` map is open-ended.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElicitationRequestedData {
+    pub request_id: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ElicitationRequestedMode>,
+    /// URL to open in the user's browser (url mode only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// JSON Schema describing the form fields to present (form mode only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested_schema: Option<serde_json::Value>,
+    /// MCP server name (or absent for agent-initiated).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elicitation_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+/// User action returned with an elicitation completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ElicitationCompletedAction {
+    Accept,
+    Decline,
+    Cancel,
+}
+
+/// Data for `elicitation.completed` event. `content` values may be string, number,
+/// boolean, or string array — preserved as raw JSON.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElicitationCompletedData {
+    pub request_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<ElicitationCompletedAction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<HashMap<String, serde_json::Value>>,
+}
+
+/// Data for `sampling.requested` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SamplingRequestedData {
+    pub request_id: String,
+    /// Name of the MCP server that initiated the sampling request.
+    pub server_name: String,
+    /// The JSON-RPC request ID from the MCP protocol (string or number).
+    pub mcp_request_id: serde_json::Value,
+}
+
+/// Data for `sampling.completed` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SamplingCompletedData {
+    pub request_id: String,
+}
+
+/// Optional static OAuth client configuration provided with `mcp.oauth_required`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpOauthStaticClientConfig {
+    pub client_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grant_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_client: Option<bool>,
+}
+
+/// Data for `mcp.oauth_required` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpOauthRequiredData {
+    pub request_id: String,
+    pub server_name: String,
+    pub server_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub static_client_config: Option<McpOauthStaticClientConfig>,
+}
+
+/// Data for `mcp.oauth_completed` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpOauthCompletedData {
+    pub request_id: String,
+}
+
+/// Data for `session.custom_notification` event. `payload` and `subject` are
+/// preserved as raw JSON since they are source-defined.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomNotificationData {
+    /// Namespace for the custom notification producer.
+    pub source: String,
+    /// Source-defined custom notification name.
+    pub name: String,
+    pub payload: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<f64>,
+}
+
+/// Data for `external_tool.completed` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalToolCompletedData {
+    pub request_id: String,
+}
+
+/// Data for `command.queued` event (slash command dispatch).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandQueuedData {
+    pub request_id: String,
+    /// The slash command text to be executed (e.g., `/help`, `/clear`).
+    pub command: String,
+}
+
+/// Data for `command.execute` event (registered command dispatch).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandExecuteData {
+    pub request_id: String,
+    /// Full command text (e.g., `/deploy production`).
+    pub command: String,
+    /// Command name without the leading `/`.
+    pub command_name: String,
+    /// Raw argument string after the command name.
+    pub args: String,
+}
+
+/// Data for `command.completed` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandCompletedData {
+    pub request_id: String,
+}
+
+/// Data for `auto_mode_switch.requested` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoModeSwitchRequestedData {
+    pub request_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_seconds: Option<f64>,
+}
+
+/// Data for `auto_mode_switch.completed` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoModeSwitchCompletedData {
+    pub request_id: String,
+    /// The user's choice: `yes`, `yes_always`, or `no`.
+    pub response: String,
+}
+
+/// SDK-registered slash command descriptor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandsChangedCommand {
+    /// Slash command name without the leading slash.
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// Data for `commands.changed` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandsChangedData {
+    pub commands: Vec<CommandsChangedCommand>,
+}
+
+/// UI capability flags carried by `capabilities.changed`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilitiesChangedUi {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elicitation: Option<bool>,
+}
+
+/// Data for `capabilities.changed` event.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilitiesChangedData {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ui: Option<CapabilitiesChangedUi>,
+}
+
+/// Data for `exit_plan_mode.requested` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExitPlanModeRequestedData {
+    pub request_id: String,
+    /// Summary of the plan that was created.
+    pub summary: String,
+    /// Full content of the plan file.
+    pub plan_content: String,
+    /// Available actions the user can take.
+    pub actions: Vec<String>,
+    /// The recommended action for the user to take.
+    pub recommended_action: String,
+}
+
+/// Data for `exit_plan_mode.completed` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExitPlanModeCompletedData {
+    pub request_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approved: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feedback: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_approve_edits: Option<bool>,
+}
+
+/// Data for `session.tools_updated` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionToolsUpdatedData {
+    /// Identifier of the model the resolved tools apply to.
+    pub model: String,
+}
+
+/// Data for `session.background_tasks_changed` event (empty payload).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SessionBackgroundTasksChangedData {}
+
+/// One skill entry in `session.skills_loaded`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillsLoadedSkill {
+    pub name: String,
+    pub description: String,
+    pub source: String,
+    pub enabled: bool,
+    pub user_invocable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+/// Data for `session.skills_loaded` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSkillsLoadedData {
+    pub skills: Vec<SkillsLoadedSkill>,
+}
+
+/// One custom agent entry in `session.custom_agents_updated`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomAgentsUpdatedAgent {
+    pub id: String,
+    pub name: String,
+    pub display_name: String,
+    pub description: String,
+    pub source: String,
+    pub user_invocable: bool,
+    /// List of tool names available to this agent, or null when all tools are available.
+    pub tools: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// Data for `session.custom_agents_updated` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCustomAgentsUpdatedData {
+    pub agents: Vec<CustomAgentsUpdatedAgent>,
+    #[serde(default)]
+    pub errors: Vec<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+/// Connection status of an MCP server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum McpServerStatus {
+    #[serde(rename = "connected")]
+    Connected,
+    #[serde(rename = "failed")]
+    Failed,
+    #[serde(rename = "needs-auth")]
+    NeedsAuth,
+    #[serde(rename = "pending")]
+    Pending,
+    #[serde(rename = "disabled")]
+    Disabled,
+    #[serde(rename = "not_configured")]
+    NotConfigured,
+}
+
+/// One MCP server entry in `session.mcp_servers_loaded`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServersLoadedServer {
+    pub name: String,
+    pub status: McpServerStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Data for `session.mcp_servers_loaded` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMcpServersLoadedData {
+    pub servers: Vec<McpServersLoadedServer>,
+}
+
+/// Data for `session.mcp_server_status_changed` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMcpServerStatusChangedData {
+    pub server_name: String,
+    pub status: McpServerStatus,
+}
+
+/// Discovery source of a loaded extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExtensionSource {
+    Project,
+    User,
+}
+
+/// Current status of a loaded extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExtensionStatus {
+    Running,
+    Disabled,
+    Failed,
+    Starting,
+}
+
+/// One extension entry in `session.extensions_loaded`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionsLoadedExtension {
+    pub id: String,
+    pub name: String,
+    pub source: ExtensionSource,
+    pub status: ExtensionStatus,
+}
+
+/// Data for `session.extensions_loaded` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionExtensionsLoadedData {
+    pub extensions: Vec<ExtensionsLoadedExtension>,
+}
+
 /// Data for `external_tool.requested` event (protocol v3 broadcast model).
 ///
 /// In protocol v3, tool calls are broadcast as session events instead of
@@ -593,22 +1222,35 @@ pub struct PermissionRequestedData {
 pub enum SessionEventData {
     SessionStart(SessionStartData),
     SessionResume(SessionResumeData),
+    SessionRemoteSteerableChanged(SessionRemoteSteerableChangedData),
     SessionError(SessionErrorData),
     SessionIdle(SessionIdleData),
+    SessionTitleChanged(SessionTitleChangedData),
+    SessionScheduleCreated(SessionScheduleCreatedData),
+    SessionScheduleCancelled(SessionScheduleCancelledData),
     SessionInfo(SessionInfoData),
+    SessionWarning(SessionWarningData),
     SessionModelChange(SessionModelChangeData),
+    SessionModeChanged(SessionModeChangedData),
+    SessionPlanChanged(SessionPlanChangedData),
+    SessionWorkspaceFileChanged(SessionWorkspaceFileChangedData),
     SessionHandoff(SessionHandoffData),
     SessionTruncation(SessionTruncationData),
+    SessionContextChanged(WorkingDirectoryContext),
+    SessionTaskComplete(SessionTaskCompleteData),
     UserMessage(UserMessageData),
     PendingMessagesModified(PendingMessagesModifiedData),
     AssistantTurnStart(AssistantTurnStartData),
     AssistantIntent(AssistantIntentData),
     AssistantReasoning(AssistantReasoningData),
     AssistantReasoningDelta(AssistantReasoningDeltaData),
+    AssistantStreamingDelta(AssistantStreamingDeltaData),
     AssistantMessage(AssistantMessageData),
+    AssistantMessageStart(AssistantMessageStartData),
     AssistantMessageDelta(AssistantMessageDeltaData),
     AssistantTurnEnd(AssistantTurnEndData),
     AssistantUsage(AssistantUsageData),
+    ModelCallFailure(ModelCallFailureData),
     Abort(AbortData),
     ToolUserRequested(ToolUserRequestedData),
     ToolExecutionStart(ToolExecutionStartData),
@@ -619,9 +1261,11 @@ pub enum SessionEventData {
     CustomAgentCompleted(CustomAgentCompletedData),
     CustomAgentFailed(CustomAgentFailedData),
     CustomAgentSelected(CustomAgentSelectedData),
+    SubagentDeselected(SubagentDeselectedData),
     HookStart(HookStartData),
     HookEnd(HookEndData),
     SystemMessage(SystemMessageEventData),
+    SystemNotification(SystemNotificationData),
     SessionCompactionStart(SessionCompactionStartData),
     SessionCompactionComplete(SessionCompactionCompleteData),
     SessionShutdown(SessionShutdownData),
@@ -630,8 +1274,35 @@ pub enum SessionEventData {
     SkillInvoked(SkillInvokedData),
     /// External tool requested (protocol v3 broadcast).
     ExternalToolRequested(ExternalToolRequestedData),
+    ExternalToolCompleted(ExternalToolCompletedData),
     /// Permission requested (protocol v3 broadcast).
     PermissionRequested(PermissionRequestedData),
+    PermissionCompleted(PermissionCompletedData),
+    UserInputRequested(UserInputRequestedData),
+    UserInputCompleted(UserInputCompletedData),
+    ElicitationRequested(ElicitationRequestedData),
+    ElicitationCompleted(ElicitationCompletedData),
+    SamplingRequested(SamplingRequestedData),
+    SamplingCompleted(SamplingCompletedData),
+    McpOauthRequired(McpOauthRequiredData),
+    McpOauthCompleted(McpOauthCompletedData),
+    CustomNotification(CustomNotificationData),
+    CommandQueued(CommandQueuedData),
+    CommandExecute(CommandExecuteData),
+    CommandCompleted(CommandCompletedData),
+    AutoModeSwitchRequested(AutoModeSwitchRequestedData),
+    AutoModeSwitchCompleted(AutoModeSwitchCompletedData),
+    CommandsChanged(CommandsChangedData),
+    CapabilitiesChanged(CapabilitiesChangedData),
+    ExitPlanModeRequested(ExitPlanModeRequestedData),
+    ExitPlanModeCompleted(ExitPlanModeCompletedData),
+    SessionToolsUpdated(SessionToolsUpdatedData),
+    SessionBackgroundTasksChanged(SessionBackgroundTasksChangedData),
+    SessionSkillsLoaded(SessionSkillsLoadedData),
+    SessionCustomAgentsUpdated(SessionCustomAgentsUpdatedData),
+    SessionMcpServersLoaded(SessionMcpServersLoadedData),
+    SessionMcpServerStatusChanged(SessionMcpServerStatusChangedData),
+    SessionExtensionsLoaded(SessionExtensionsLoadedData),
     /// Unknown event - preserves raw JSON for forward compatibility.
     Unknown(serde_json::Value),
 }
@@ -771,124 +1442,120 @@ impl SessionEvent {
 
 /// Parse event data based on event type string.
 fn parse_event_data(event_type: &str, data: serde_json::Value) -> SessionEventData {
+    // Helper macros keep the dispatcher compact and uniform.
+    macro_rules! parse_into {
+        ($variant:ident) => {
+            serde_json::from_value(data)
+                .map(SessionEventData::$variant)
+                .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null))
+        };
+    }
+
     match event_type {
-        "session.start" => serde_json::from_value(data)
-            .map(SessionEventData::SessionStart)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "session.resume" => serde_json::from_value(data)
-            .map(SessionEventData::SessionResume)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "session.error" => serde_json::from_value(data)
-            .map(SessionEventData::SessionError)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "session.idle" => SessionEventData::SessionIdle(SessionIdleData {}),
-        "session.info" => serde_json::from_value(data)
-            .map(SessionEventData::SessionInfo)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "session.model_change" => serde_json::from_value(data)
-            .map(SessionEventData::SessionModelChange)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "session.handoff" => serde_json::from_value(data)
-            .map(SessionEventData::SessionHandoff)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "session.truncation" => serde_json::from_value(data)
-            .map(SessionEventData::SessionTruncation)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "user.message" => serde_json::from_value(data)
-            .map(SessionEventData::UserMessage)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "pending_messages.modified" => {
-            SessionEventData::PendingMessagesModified(PendingMessagesModifiedData {})
-        }
-        "assistant.turn_start" => serde_json::from_value(data)
-            .map(SessionEventData::AssistantTurnStart)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "assistant.intent" => serde_json::from_value(data)
-            .map(SessionEventData::AssistantIntent)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "assistant.reasoning" => serde_json::from_value(data)
-            .map(SessionEventData::AssistantReasoning)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "assistant.reasoning_delta" => serde_json::from_value(data)
-            .map(SessionEventData::AssistantReasoningDelta)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "assistant.message" => serde_json::from_value(data)
-            .map(SessionEventData::AssistantMessage)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "assistant.message_delta" => serde_json::from_value(data)
-            .map(SessionEventData::AssistantMessageDelta)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "assistant.turn_end" => serde_json::from_value(data)
-            .map(SessionEventData::AssistantTurnEnd)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "assistant.usage" => serde_json::from_value(data)
-            .map(SessionEventData::AssistantUsage)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "abort" => serde_json::from_value(data)
-            .map(SessionEventData::Abort)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "tool.user_requested" => serde_json::from_value(data)
-            .map(SessionEventData::ToolUserRequested)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "tool.execution_start" => serde_json::from_value(data)
-            .map(SessionEventData::ToolExecutionStart)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "tool.execution_partial_result" => serde_json::from_value(data)
-            .map(SessionEventData::ToolExecutionPartialResult)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "tool.execution_complete" => serde_json::from_value(data)
-            .map(SessionEventData::ToolExecutionComplete)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "tool.execution_progress" => serde_json::from_value(data)
-            .map(SessionEventData::ToolExecutionProgress)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        // Primary wire names (subagent.*) + legacy aliases (custom_agent.*)
-        "subagent.started" | "custom_agent.started" => serde_json::from_value(data)
-            .map(SessionEventData::CustomAgentStarted)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "subagent.completed" | "custom_agent.completed" => serde_json::from_value(data)
-            .map(SessionEventData::CustomAgentCompleted)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "subagent.failed" | "custom_agent.failed" => serde_json::from_value(data)
-            .map(SessionEventData::CustomAgentFailed)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "subagent.selected" | "custom_agent.selected" => serde_json::from_value(data)
-            .map(SessionEventData::CustomAgentSelected)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "hook.start" => serde_json::from_value(data)
-            .map(SessionEventData::HookStart)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "hook.end" => serde_json::from_value(data)
-            .map(SessionEventData::HookEnd)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "system.message" => serde_json::from_value(data)
-            .map(SessionEventData::SystemMessage)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
+        // -- session lifecycle / metadata --
+        "session.start" => parse_into!(SessionStart),
+        "session.resume" => parse_into!(SessionResume),
+        "session.remote_steerable_changed" => parse_into!(SessionRemoteSteerableChanged),
+        "session.error" => parse_into!(SessionError),
+        "session.idle" => serde_json::from_value(data)
+            .map(SessionEventData::SessionIdle)
+            .unwrap_or_else(|_| SessionEventData::SessionIdle(SessionIdleData::default())),
+        "session.title_changed" => parse_into!(SessionTitleChanged),
+        "session.schedule_created" => parse_into!(SessionScheduleCreated),
+        "session.schedule_cancelled" => parse_into!(SessionScheduleCancelled),
+        "session.info" => parse_into!(SessionInfo),
+        "session.warning" => parse_into!(SessionWarning),
+        "session.model_change" => parse_into!(SessionModelChange),
+        "session.mode_changed" => parse_into!(SessionModeChanged),
+        "session.plan_changed" => parse_into!(SessionPlanChanged),
+        "session.workspace_file_changed" => parse_into!(SessionWorkspaceFileChanged),
+        "session.handoff" => parse_into!(SessionHandoff),
+        "session.truncation" => parse_into!(SessionTruncation),
+        "session.context_changed" => parse_into!(SessionContextChanged),
+        "session.task_complete" => parse_into!(SessionTaskComplete),
+        "session.snapshot_rewind" => parse_into!(SessionSnapshotRewind),
+        "session.shutdown" => parse_into!(SessionShutdown),
+        "session.usage_info" => parse_into!(SessionUsageInfo),
         "session.compaction_start" => {
             SessionEventData::SessionCompactionStart(SessionCompactionStartData {})
         }
-        "session.compaction_complete" => serde_json::from_value(data)
-            .map(SessionEventData::SessionCompactionComplete)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "session.shutdown" => serde_json::from_value(data)
-            .map(SessionEventData::SessionShutdown)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "session.snapshot_rewind" => serde_json::from_value(data)
-            .map(SessionEventData::SessionSnapshotRewind)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "session.usage_info" => serde_json::from_value(data)
-            .map(SessionEventData::SessionUsageInfo)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "skill.invoked" => serde_json::from_value(data)
-            .map(SessionEventData::SkillInvoked)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "external_tool.requested" => serde_json::from_value(data)
-            .map(SessionEventData::ExternalToolRequested)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        "permission.requested" => serde_json::from_value(data)
-            .map(SessionEventData::PermissionRequested)
-            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
-        // Unknown event type - preserve raw data
+        "session.compaction_complete" => parse_into!(SessionCompactionComplete),
+        "session.custom_notification" => parse_into!(CustomNotification),
+        "session.tools_updated" => parse_into!(SessionToolsUpdated),
+        "session.background_tasks_changed" => {
+            SessionEventData::SessionBackgroundTasksChanged(SessionBackgroundTasksChangedData {})
+        }
+        "session.skills_loaded" => parse_into!(SessionSkillsLoaded),
+        "session.custom_agents_updated" => parse_into!(SessionCustomAgentsUpdated),
+        "session.mcp_servers_loaded" => parse_into!(SessionMcpServersLoaded),
+        "session.mcp_server_status_changed" => parse_into!(SessionMcpServerStatusChanged),
+        "session.extensions_loaded" => parse_into!(SessionExtensionsLoaded),
+
+        // -- user/assistant turn flow --
+        "user.message" => parse_into!(UserMessage),
+        "pending_messages.modified" => {
+            SessionEventData::PendingMessagesModified(PendingMessagesModifiedData {})
+        }
+        "assistant.turn_start" => parse_into!(AssistantTurnStart),
+        "assistant.intent" => parse_into!(AssistantIntent),
+        "assistant.reasoning" => parse_into!(AssistantReasoning),
+        "assistant.reasoning_delta" => parse_into!(AssistantReasoningDelta),
+        "assistant.streaming_delta" => parse_into!(AssistantStreamingDelta),
+        "assistant.message" => parse_into!(AssistantMessage),
+        "assistant.message_start" => parse_into!(AssistantMessageStart),
+        "assistant.message_delta" => parse_into!(AssistantMessageDelta),
+        "assistant.turn_end" => parse_into!(AssistantTurnEnd),
+        "assistant.usage" => parse_into!(AssistantUsage),
+        "model.call_failure" => parse_into!(ModelCallFailure),
+        "abort" => parse_into!(Abort),
+
+        // -- tool/skill execution --
+        "tool.user_requested" => parse_into!(ToolUserRequested),
+        "tool.execution_start" => parse_into!(ToolExecutionStart),
+        "tool.execution_partial_result" => parse_into!(ToolExecutionPartialResult),
+        "tool.execution_complete" => parse_into!(ToolExecutionComplete),
+        "tool.execution_progress" => parse_into!(ToolExecutionProgress),
+        "skill.invoked" => parse_into!(SkillInvoked),
+
+        // Primary wire names (subagent.*) + legacy aliases (custom_agent.*).
+        "subagent.started" | "custom_agent.started" => parse_into!(CustomAgentStarted),
+        "subagent.completed" | "custom_agent.completed" => parse_into!(CustomAgentCompleted),
+        "subagent.failed" | "custom_agent.failed" => parse_into!(CustomAgentFailed),
+        "subagent.selected" | "custom_agent.selected" => parse_into!(CustomAgentSelected),
+        "subagent.deselected" | "custom_agent.deselected" => {
+            SessionEventData::SubagentDeselected(SubagentDeselectedData {})
+        }
+
+        // -- hooks / system messages --
+        "hook.start" => parse_into!(HookStart),
+        "hook.end" => parse_into!(HookEnd),
+        "system.message" => parse_into!(SystemMessage),
+        "system.notification" => parse_into!(SystemNotification),
+
+        // -- protocol v3 broadcasts and request/response pairs --
+        "external_tool.requested" => parse_into!(ExternalToolRequested),
+        "external_tool.completed" => parse_into!(ExternalToolCompleted),
+        "permission.requested" => parse_into!(PermissionRequested),
+        "permission.completed" => parse_into!(PermissionCompleted),
+        "user_input.requested" => parse_into!(UserInputRequested),
+        "user_input.completed" => parse_into!(UserInputCompleted),
+        "elicitation.requested" => parse_into!(ElicitationRequested),
+        "elicitation.completed" => parse_into!(ElicitationCompleted),
+        "sampling.requested" => parse_into!(SamplingRequested),
+        "sampling.completed" => parse_into!(SamplingCompleted),
+        "mcp.oauth_required" => parse_into!(McpOauthRequired),
+        "mcp.oauth_completed" => parse_into!(McpOauthCompleted),
+        "command.queued" => parse_into!(CommandQueued),
+        "command.execute" => parse_into!(CommandExecute),
+        "command.completed" => parse_into!(CommandCompleted),
+        "auto_mode_switch.requested" => parse_into!(AutoModeSwitchRequested),
+        "auto_mode_switch.completed" => parse_into!(AutoModeSwitchCompleted),
+        "commands.changed" => parse_into!(CommandsChanged),
+        "capabilities.changed" => parse_into!(CapabilitiesChanged),
+        "exit_plan_mode.requested" => parse_into!(ExitPlanModeRequested),
+        "exit_plan_mode.completed" => parse_into!(ExitPlanModeCompleted),
+
+        // Unknown event type - preserve raw data.
         _ => SessionEventData::Unknown(data),
     }
 }
@@ -1446,5 +2113,652 @@ mod tests {
 
         let event = SessionEvent::from_json(&json).unwrap();
         assert_eq!(event.event_type, "session.usage_info");
+    }
+
+    // =========================================================================
+    // Tests for newly-added event variants (upstream parity batch)
+    // =========================================================================
+
+    fn make_event(event_type: &str, data: serde_json::Value) -> SessionEvent {
+        let json = json!({
+            "id": format!("evt_{event_type}"),
+            "timestamp": "2025-01-01T00:00:00Z",
+            "type": event_type,
+            "data": data,
+        });
+        SessionEvent::from_json(&json).unwrap()
+    }
+
+    #[test]
+    fn test_parse_session_remote_steerable_changed() {
+        let event = make_event(
+            "session.remote_steerable_changed",
+            json!({ "remoteSteerable": true }),
+        );
+        match event.data {
+            SessionEventData::SessionRemoteSteerableChanged(d) => assert!(d.remote_steerable),
+            other => panic!("Expected SessionRemoteSteerableChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_title_changed() {
+        let event = make_event("session.title_changed", json!({ "title": "Hello" }));
+        match event.data {
+            SessionEventData::SessionTitleChanged(d) => assert_eq!(d.title, "Hello"),
+            other => panic!("Expected SessionTitleChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_schedule_created_and_cancelled() {
+        let created = make_event(
+            "session.schedule_created",
+            json!({ "id": 1, "prompt": "/echo", "intervalMs": 1000, "recurring": true }),
+        );
+        match created.data {
+            SessionEventData::SessionScheduleCreated(d) => {
+                assert_eq!(d.id, 1.0);
+                assert_eq!(d.prompt, "/echo");
+                assert_eq!(d.interval_ms, 1000.0);
+                assert_eq!(d.recurring, Some(true));
+            }
+            other => panic!("Expected SessionScheduleCreated, got {other:?}"),
+        }
+        let cancelled = make_event("session.schedule_cancelled", json!({ "id": 1 }));
+        assert!(matches!(
+            cancelled.data,
+            SessionEventData::SessionScheduleCancelled(_)
+        ));
+    }
+
+    #[test]
+    fn test_parse_session_warning() {
+        let event = make_event(
+            "session.warning",
+            json!({ "warningType": "policy", "message": "heads up" }),
+        );
+        match event.data {
+            SessionEventData::SessionWarning(d) => {
+                assert_eq!(d.warning_type, "policy");
+                assert_eq!(d.message, "heads up");
+            }
+            other => panic!("Expected SessionWarning, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_mode_changed() {
+        let event = make_event(
+            "session.mode_changed",
+            json!({ "previousMode": "interactive", "newMode": "plan" }),
+        );
+        match event.data {
+            SessionEventData::SessionModeChanged(d) => {
+                assert_eq!(d.previous_mode, "interactive");
+                assert_eq!(d.new_mode, "plan");
+            }
+            other => panic!("Expected SessionModeChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_plan_changed() {
+        let event = make_event("session.plan_changed", json!({ "operation": "create" }));
+        match event.data {
+            SessionEventData::SessionPlanChanged(d) => {
+                assert_eq!(d.operation, PlanChangedOperation::Create);
+            }
+            other => panic!("Expected SessionPlanChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_workspace_file_changed() {
+        let event = make_event(
+            "session.workspace_file_changed",
+            json!({ "operation": "update", "path": "notes.md" }),
+        );
+        match event.data {
+            SessionEventData::SessionWorkspaceFileChanged(d) => {
+                assert_eq!(d.operation, WorkspaceFileChangedOperation::Update);
+                assert_eq!(d.path, "notes.md");
+            }
+            other => panic!("Expected SessionWorkspaceFileChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_context_changed() {
+        let event = make_event(
+            "session.context_changed",
+            json!({
+                "cwd": "/repo",
+                "branch": "main",
+                "hostType": "github",
+                "repository": "owner/name"
+            }),
+        );
+        match event.data {
+            SessionEventData::SessionContextChanged(ctx) => {
+                assert_eq!(ctx.cwd, "/repo");
+                assert_eq!(ctx.branch.as_deref(), Some("main"));
+                assert_eq!(ctx.host_type, Some(WorkingDirectoryHostType::Github));
+                assert_eq!(ctx.repository.as_deref(), Some("owner/name"));
+            }
+            other => panic!("Expected SessionContextChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_task_complete() {
+        let event = make_event(
+            "session.task_complete",
+            json!({ "success": true, "summary": "done" }),
+        );
+        match event.data {
+            SessionEventData::SessionTaskComplete(d) => {
+                assert_eq!(d.success, Some(true));
+                assert_eq!(d.summary.as_deref(), Some("done"));
+            }
+            other => panic!("Expected SessionTaskComplete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_info_with_tip_url() {
+        let event = make_event(
+            "session.info",
+            json!({
+                "infoType": "notification",
+                "message": "hi",
+                "tip": "press tab",
+                "url": "https://example.com"
+            }),
+        );
+        match event.data {
+            SessionEventData::SessionInfo(d) => {
+                assert_eq!(d.tip.as_deref(), Some("press tab"));
+                assert_eq!(d.url.as_deref(), Some("https://example.com"));
+            }
+            other => panic!("Expected SessionInfo, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_assistant_streaming_delta() {
+        let event = make_event(
+            "assistant.streaming_delta",
+            json!({ "totalResponseSizeBytes": 1234 }),
+        );
+        match event.data {
+            SessionEventData::AssistantStreamingDelta(d) => {
+                assert_eq!(d.total_response_size_bytes, 1234.0);
+            }
+            other => panic!("Expected AssistantStreamingDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_assistant_message_start() {
+        let event = make_event(
+            "assistant.message_start",
+            json!({ "messageId": "msg_1", "phase": "thinking" }),
+        );
+        match event.data {
+            SessionEventData::AssistantMessageStart(d) => {
+                assert_eq!(d.message_id, "msg_1");
+                assert_eq!(d.phase.as_deref(), Some("thinking"));
+            }
+            other => panic!("Expected AssistantMessageStart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_model_call_failure() {
+        let event = make_event(
+            "model.call_failure",
+            json!({
+                "source": "top_level",
+                "model": "gpt-4",
+                "statusCode": 500,
+                "errorMessage": "boom"
+            }),
+        );
+        match event.data {
+            SessionEventData::ModelCallFailure(d) => {
+                assert_eq!(d.source, ModelCallFailureSource::TopLevel);
+                assert_eq!(d.model.as_deref(), Some("gpt-4"));
+                assert_eq!(d.status_code, Some(500.0));
+            }
+            other => panic!("Expected ModelCallFailure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_subagent_deselected() {
+        let event = make_event("subagent.deselected", json!({}));
+        assert!(matches!(
+            event.data,
+            SessionEventData::SubagentDeselected(_)
+        ));
+    }
+
+    #[test]
+    fn test_parse_system_notification() {
+        let event = make_event(
+            "system.notification",
+            json!({
+                "content": "<system_notification>...</system_notification>",
+                "kind": { "type": "agent_completed", "agentId": "a1", "agentType": "explore", "status": "completed" }
+            }),
+        );
+        match event.data {
+            SessionEventData::SystemNotification(d) => {
+                assert!(d.content.contains("system_notification"));
+                assert_eq!(d.kind["type"], "agent_completed");
+            }
+            other => panic!("Expected SystemNotification, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_permission_completed() {
+        let event = make_event(
+            "permission.completed",
+            json!({
+                "requestId": "req_1",
+                "result": { "kind": "approved" },
+                "toolCallId": "call_1"
+            }),
+        );
+        match event.data {
+            SessionEventData::PermissionCompleted(d) => {
+                assert_eq!(d.request_id, "req_1");
+                assert_eq!(d.result["kind"], "approved");
+                assert_eq!(d.tool_call_id.as_deref(), Some("call_1"));
+            }
+            other => panic!("Expected PermissionCompleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_user_input_requested_and_completed() {
+        let req = make_event(
+            "user_input.requested",
+            json!({
+                "requestId": "ui_1",
+                "question": "yes?",
+                "choices": ["yes", "no"],
+                "allowFreeform": true
+            }),
+        );
+        match req.data {
+            SessionEventData::UserInputRequested(d) => {
+                assert_eq!(d.question, "yes?");
+                assert_eq!(d.choices.as_ref().unwrap().len(), 2);
+                assert_eq!(d.allow_freeform, Some(true));
+            }
+            other => panic!("Expected UserInputRequested, got {other:?}"),
+        }
+        let cmp = make_event(
+            "user_input.completed",
+            json!({ "requestId": "ui_1", "answer": "yes", "wasFreeform": false }),
+        );
+        match cmp.data {
+            SessionEventData::UserInputCompleted(d) => {
+                assert_eq!(d.answer.as_deref(), Some("yes"));
+            }
+            other => panic!("Expected UserInputCompleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_elicitation_requested_and_completed() {
+        let req = make_event(
+            "elicitation.requested",
+            json!({
+                "requestId": "e1",
+                "message": "fill it out",
+                "mode": "form",
+                "requestedSchema": { "type": "object", "properties": { "name": { "type": "string" } } }
+            }),
+        );
+        match req.data {
+            SessionEventData::ElicitationRequested(d) => {
+                assert_eq!(d.mode, Some(ElicitationRequestedMode::Form));
+                assert!(d.requested_schema.is_some());
+            }
+            other => panic!("Expected ElicitationRequested, got {other:?}"),
+        }
+        let cmp = make_event(
+            "elicitation.completed",
+            json!({ "requestId": "e1", "action": "accept", "content": { "name": "alice" } }),
+        );
+        match cmp.data {
+            SessionEventData::ElicitationCompleted(d) => {
+                assert_eq!(d.action, Some(ElicitationCompletedAction::Accept));
+                assert_eq!(d.content.as_ref().unwrap()["name"], "alice");
+            }
+            other => panic!("Expected ElicitationCompleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_sampling_requested_and_completed() {
+        let req = make_event(
+            "sampling.requested",
+            json!({ "requestId": "s1", "serverName": "srv", "mcpRequestId": 7 }),
+        );
+        match req.data {
+            SessionEventData::SamplingRequested(d) => {
+                assert_eq!(d.server_name, "srv");
+                assert_eq!(d.mcp_request_id, 7);
+            }
+            other => panic!("Expected SamplingRequested, got {other:?}"),
+        }
+        let cmp = make_event("sampling.completed", json!({ "requestId": "s1" }));
+        assert!(matches!(cmp.data, SessionEventData::SamplingCompleted(_)));
+    }
+
+    #[test]
+    fn test_parse_mcp_oauth_required_and_completed() {
+        let req = make_event(
+            "mcp.oauth_required",
+            json!({
+                "requestId": "o1",
+                "serverName": "srv",
+                "serverUrl": "https://srv.example",
+                "staticClientConfig": { "clientId": "cid" }
+            }),
+        );
+        match req.data {
+            SessionEventData::McpOauthRequired(d) => {
+                assert_eq!(d.server_name, "srv");
+                assert_eq!(d.static_client_config.as_ref().unwrap().client_id, "cid");
+            }
+            other => panic!("Expected McpOauthRequired, got {other:?}"),
+        }
+        let cmp = make_event("mcp.oauth_completed", json!({ "requestId": "o1" }));
+        assert!(matches!(cmp.data, SessionEventData::McpOauthCompleted(_)));
+    }
+
+    #[test]
+    fn test_parse_custom_notification() {
+        let event = make_event(
+            "session.custom_notification",
+            json!({
+                "source": "my-ext",
+                "name": "ping",
+                "payload": { "x": 1 },
+                "version": 2
+            }),
+        );
+        match event.data {
+            SessionEventData::CustomNotification(d) => {
+                assert_eq!(d.source, "my-ext");
+                assert_eq!(d.payload["x"], 1);
+                assert_eq!(d.version, Some(2.0));
+            }
+            other => panic!("Expected CustomNotification, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_external_tool_completed() {
+        let event = make_event("external_tool.completed", json!({ "requestId": "x1" }));
+        match event.data {
+            SessionEventData::ExternalToolCompleted(d) => assert_eq!(d.request_id, "x1"),
+            other => panic!("Expected ExternalToolCompleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_command_lifecycle() {
+        let queued = make_event(
+            "command.queued",
+            json!({ "requestId": "c1", "command": "/help" }),
+        );
+        assert!(matches!(queued.data, SessionEventData::CommandQueued(_)));
+        let exec = make_event(
+            "command.execute",
+            json!({
+                "requestId": "c2",
+                "command": "/deploy prod",
+                "commandName": "deploy",
+                "args": "prod"
+            }),
+        );
+        match exec.data {
+            SessionEventData::CommandExecute(d) => {
+                assert_eq!(d.command_name, "deploy");
+                assert_eq!(d.args, "prod");
+            }
+            other => panic!("Expected CommandExecute, got {other:?}"),
+        }
+        let done = make_event("command.completed", json!({ "requestId": "c1" }));
+        assert!(matches!(done.data, SessionEventData::CommandCompleted(_)));
+    }
+
+    #[test]
+    fn test_parse_auto_mode_switch() {
+        let req = make_event(
+            "auto_mode_switch.requested",
+            json!({ "requestId": "a1", "errorCode": "user_global_rate_limited", "retryAfterSeconds": 60 }),
+        );
+        match req.data {
+            SessionEventData::AutoModeSwitchRequested(d) => {
+                assert_eq!(d.retry_after_seconds, Some(60.0));
+            }
+            other => panic!("Expected AutoModeSwitchRequested, got {other:?}"),
+        }
+        let cmp = make_event(
+            "auto_mode_switch.completed",
+            json!({ "requestId": "a1", "response": "yes" }),
+        );
+        match cmp.data {
+            SessionEventData::AutoModeSwitchCompleted(d) => assert_eq!(d.response, "yes"),
+            other => panic!("Expected AutoModeSwitchCompleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_commands_changed() {
+        let event = make_event(
+            "commands.changed",
+            json!({ "commands": [{ "name": "deploy", "description": "ship it" }] }),
+        );
+        match event.data {
+            SessionEventData::CommandsChanged(d) => {
+                assert_eq!(d.commands.len(), 1);
+                assert_eq!(d.commands[0].name, "deploy");
+                assert_eq!(d.commands[0].description.as_deref(), Some("ship it"));
+            }
+            other => panic!("Expected CommandsChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_capabilities_changed() {
+        let event = make_event(
+            "capabilities.changed",
+            json!({ "ui": { "elicitation": true } }),
+        );
+        match event.data {
+            SessionEventData::CapabilitiesChanged(d) => {
+                assert_eq!(d.ui.unwrap().elicitation, Some(true));
+            }
+            other => panic!("Expected CapabilitiesChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_exit_plan_mode_requested_and_completed() {
+        let req = make_event(
+            "exit_plan_mode.requested",
+            json!({
+                "requestId": "p1",
+                "summary": "build it",
+                "planContent": "## plan",
+                "actions": ["approve", "edit"],
+                "recommendedAction": "approve"
+            }),
+        );
+        match req.data {
+            SessionEventData::ExitPlanModeRequested(d) => {
+                assert_eq!(d.recommended_action, "approve");
+                assert_eq!(d.actions.len(), 2);
+            }
+            other => panic!("Expected ExitPlanModeRequested, got {other:?}"),
+        }
+        let cmp = make_event(
+            "exit_plan_mode.completed",
+            json!({ "requestId": "p1", "approved": true, "selectedAction": "autopilot" }),
+        );
+        match cmp.data {
+            SessionEventData::ExitPlanModeCompleted(d) => {
+                assert_eq!(d.approved, Some(true));
+                assert_eq!(d.selected_action.as_deref(), Some("autopilot"));
+            }
+            other => panic!("Expected ExitPlanModeCompleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_tools_updated_and_background_tasks() {
+        let tu = make_event("session.tools_updated", json!({ "model": "gpt-4" }));
+        match tu.data {
+            SessionEventData::SessionToolsUpdated(d) => assert_eq!(d.model, "gpt-4"),
+            other => panic!("Expected SessionToolsUpdated, got {other:?}"),
+        }
+        let bt = make_event("session.background_tasks_changed", json!({}));
+        assert!(matches!(
+            bt.data,
+            SessionEventData::SessionBackgroundTasksChanged(_)
+        ));
+    }
+
+    #[test]
+    fn test_parse_session_skills_loaded() {
+        let event = make_event(
+            "session.skills_loaded",
+            json!({
+                "skills": [
+                    {
+                        "name": "code-review",
+                        "description": "review code",
+                        "source": "project",
+                        "enabled": true,
+                        "userInvocable": false
+                    }
+                ]
+            }),
+        );
+        match event.data {
+            SessionEventData::SessionSkillsLoaded(d) => {
+                assert_eq!(d.skills.len(), 1);
+                assert_eq!(d.skills[0].name, "code-review");
+                assert!(d.skills[0].enabled);
+            }
+            other => panic!("Expected SessionSkillsLoaded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_custom_agents_updated() {
+        let event = make_event(
+            "session.custom_agents_updated",
+            json!({
+                "agents": [{
+                    "id": "agent.1",
+                    "name": "internal",
+                    "displayName": "My Agent",
+                    "description": "does things",
+                    "source": "project",
+                    "userInvocable": true,
+                    "tools": ["read_file"]
+                }],
+                "errors": [],
+                "warnings": ["minor"]
+            }),
+        );
+        match event.data {
+            SessionEventData::SessionCustomAgentsUpdated(d) => {
+                assert_eq!(d.agents.len(), 1);
+                assert_eq!(d.agents[0].id, "agent.1");
+                assert_eq!(d.warnings.len(), 1);
+            }
+            other => panic!("Expected SessionCustomAgentsUpdated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_mcp_servers_loaded_and_status_changed() {
+        let loaded = make_event(
+            "session.mcp_servers_loaded",
+            json!({
+                "servers": [
+                    { "name": "fs", "status": "connected" },
+                    { "name": "auth", "status": "needs-auth", "error": "401" }
+                ]
+            }),
+        );
+        match loaded.data {
+            SessionEventData::SessionMcpServersLoaded(d) => {
+                assert_eq!(d.servers.len(), 2);
+                assert_eq!(d.servers[0].status, McpServerStatus::Connected);
+                assert_eq!(d.servers[1].status, McpServerStatus::NeedsAuth);
+            }
+            other => panic!("Expected SessionMcpServersLoaded, got {other:?}"),
+        }
+        let changed = make_event(
+            "session.mcp_server_status_changed",
+            json!({ "serverName": "fs", "status": "failed" }),
+        );
+        match changed.data {
+            SessionEventData::SessionMcpServerStatusChanged(d) => {
+                assert_eq!(d.server_name, "fs");
+                assert_eq!(d.status, McpServerStatus::Failed);
+            }
+            other => panic!("Expected SessionMcpServerStatusChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_extensions_loaded() {
+        let event = make_event(
+            "session.extensions_loaded",
+            json!({
+                "extensions": [
+                    { "id": "project:my-ext", "name": "my-ext", "source": "project", "status": "running" }
+                ]
+            }),
+        );
+        match event.data {
+            SessionEventData::SessionExtensionsLoaded(d) => {
+                assert_eq!(d.extensions.len(), 1);
+                assert_eq!(d.extensions[0].source, ExtensionSource::Project);
+                assert_eq!(d.extensions[0].status, ExtensionStatus::Running);
+            }
+            other => panic!("Expected SessionExtensionsLoaded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_idle_with_aborted() {
+        let event = make_event("session.idle", json!({ "aborted": true }));
+        match event.data {
+            SessionEventData::SessionIdle(d) => assert_eq!(d.aborted, Some(true)),
+            other => panic!("Expected SessionIdle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_unknown_fallback_still_works_for_truly_unknown_types() {
+        let event = make_event("some.totally.new.thing", json!({ "foo": "bar" }));
+        match event.data {
+            SessionEventData::Unknown(v) => assert_eq!(v["foo"], "bar"),
+            other => panic!("Expected Unknown, got {other:?}"),
+        }
     }
 }

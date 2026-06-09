@@ -4,6 +4,7 @@
 //! Core types for the Copilot SDK.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -69,6 +70,84 @@ pub enum LogLevel {
     All,
 }
 
+/// Remote-session mode (Mission Control integration). Matches upstream nodejs
+/// `RemoteSessionMode` union: `"off" | "export" | "on"`. v0.1.49 addition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteSessionMode {
+    Off,
+    Export,
+    On,
+}
+
+/// Type of GitHub reference attachment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum GitHubReferenceType {
+    Issue,
+    Pr,
+    Discussion,
+}
+
+/// Message delivery mode for message sending.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum DeliveryMode {
+    Enqueue,
+    Immediate,
+}
+
+/// Elicitation display mode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub enum ElicitationMode {
+    Form,
+    Url,
+    #[serde(other)]
+    Unknown,
+}
+
+/// Semantic format hints for text input fields.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub enum InputFormat {
+    Email,
+    Uri,
+    Date,
+    DateTime,
+}
+
+impl InputFormat {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Email => "email",
+            Self::Uri => "uri",
+            Self::Date => "date",
+            Self::DateTime => "date-time",
+        }
+    }
+}
+
+/// Permission categories the CLI may request approval for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
+pub enum PermissionRequestKind {
+    Shell,
+    Write,
+    Read,
+    Url,
+    Mcp,
+    CustomTool,
+    Memory,
+    Hook,
+    #[serde(other)]
+    Unknown,
+}
+
 impl std::fmt::Display for LogLevel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -98,10 +177,10 @@ pub struct ToolBinaryResult {
     pub description: Option<String>,
 }
 
-/// Result object returned from tool execution.
+/// Expanded result object returned from tool execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ToolResultObject {
+pub struct ToolResultExpanded {
     pub text_result_for_llm: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub binary_results_for_llm: Option<Vec<ToolBinaryResult>>,
@@ -119,7 +198,7 @@ fn default_result_type() -> String {
     "success".to_string()
 }
 
-impl ToolResultObject {
+impl ToolResultExpanded {
     /// Create a success result with text.
     pub fn text(result: impl Into<String>) -> Self {
         Self {
@@ -145,8 +224,30 @@ impl ToolResultObject {
     }
 }
 
-/// Convenient alias for tool results.
-pub type ToolResult = ToolResultObject;
+/// Result of a tool invocation — either a plain text string or an expanded result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+#[non_exhaustive]
+pub enum ToolResult {
+    Text(String),
+    Expanded(ToolResultExpanded),
+}
+
+impl ToolResult {
+    pub fn text(result: impl Into<String>) -> Self {
+        Self::Text(result.into())
+    }
+
+    pub fn error(message: impl Into<String>) -> Self {
+        Self::Expanded(ToolResultExpanded::error(message))
+    }
+}
+
+impl From<ToolResultExpanded> for ToolResult {
+    fn from(result: ToolResultExpanded) -> Self {
+        Self::Expanded(result)
+    }
+}
 
 /// Information about a tool invocation from the server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -396,6 +497,101 @@ pub struct CustomAgentConfig {
     pub mcp_servers: Option<HashMap<String, serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub infer: Option<bool>,
+    /// Skill names to preload into this agent's context at startup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
+    /// Model identifier for this agent (e.g. `"claude-haiku-4.5"`).
+    ///
+    /// When set, the runtime will attempt to use this model for the agent,
+    /// falling back to the parent session model if unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+impl CustomAgentConfig {
+    /// Construct a custom agent configuration with the required `name`
+    /// and `prompt` fields populated.
+    pub fn new(name: impl Into<String>, prompt: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            prompt: prompt.into(),
+            ..Self::default()
+        }
+    }
+
+    /// Set the display name shown in the CLI's agent-selection UI.
+    pub fn with_display_name(mut self, display_name: impl Into<String>) -> Self {
+        self.display_name = Some(display_name.into());
+        self
+    }
+
+    /// Set the description of what the agent does.
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    /// Restrict the agent to a specific tool allowlist.
+    pub fn with_tools<I, S>(mut self, tools: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.tools = Some(tools.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Configure agent-specific MCP servers.
+    pub fn with_mcp_servers(mut self, mcp_servers: HashMap<String, serde_json::Value>) -> Self {
+        self.mcp_servers = Some(mcp_servers);
+        self
+    }
+
+    /// Whether the agent participates in model inference.
+    pub fn with_infer(mut self, infer: bool) -> Self {
+        self.infer = Some(infer);
+        self
+    }
+
+    /// Set the skills preloaded into the agent's context at startup.
+    pub fn with_skills<I, S>(mut self, skills: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.skills = Some(skills.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Set the model identifier for this agent.
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
+}
+
+/// Configures the default (built-in) agent that handles turns when no custom
+/// agent is selected.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DefaultAgentConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excluded_tools: Option<Vec<String>>,
+}
+
+impl DefaultAgentConfig {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_excluded_tools<I, S>(mut self, tools: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.excluded_tools = Some(tools.into_iter().map(Into::into).collect());
+        self
+    }
 }
 
 // =============================================================================
@@ -420,7 +616,7 @@ pub struct UserMessageAttachment {
 ///
 /// Use the builder pattern to create tools:
 /// ```no_run
-/// use copilot_sdk::{Client, SessionConfig, Tool, ToolHandler, ToolResultObject};
+/// use copilot_sdk::{Client, SessionConfig, Tool, ToolHandler, ToolResult};
 /// use std::sync::Arc;
 ///
 /// #[tokio::main]
@@ -443,21 +639,47 @@ pub struct UserMessageAttachment {
 ///
 /// let handler: ToolHandler = Arc::new(|_name, args| {
 ///     let city = args.get("city").and_then(|v| v.as_str()).unwrap_or("unknown");
-///     ToolResultObject::text(format!("Weather in {}: sunny", city))
+///     ToolResult::text(format!("Weather in {}: sunny", city))
 /// });
 /// session.register_tool_with_handler(tool, Some(handler)).await;
 /// client.stop().await;
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Clone)]
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Tool {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespaced_name: Option<String>,
     pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    #[serde(rename = "parameters", default = "empty_parameters_schema")]
     pub parameters_schema: serde_json::Value,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub overrides_built_in_tool: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub skip_permission: bool,
     // Handler is stored separately in Session since it's not Clone-friendly
+}
+
+fn empty_parameters_schema() -> serde_json::Value {
+    serde_json::json!({})
+}
+
+impl Default for Tool {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            namespaced_name: None,
+            description: String::new(),
+            instructions: None,
+            parameters_schema: empty_parameters_schema(),
+            overrides_built_in_tool: false,
+            skip_permission: false,
+        }
+    }
 }
 
 impl Tool {
@@ -465,22 +687,41 @@ impl Tool {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            description: String::new(),
-            parameters_schema: serde_json::json!({}),
-            overrides_built_in_tool: false,
-            skip_permission: false,
+            ..Default::default()
         }
     }
 
+    /// Set the tool's namespaced name.
+    pub fn with_namespaced_name(mut self, namespaced_name: impl Into<String>) -> Self {
+        self.namespaced_name = Some(namespaced_name.into());
+        self
+    }
+
     /// Set the tool description.
-    pub fn description(mut self, desc: impl Into<String>) -> Self {
-        self.description = desc.into();
+    pub fn description(self, desc: impl Into<String>) -> Self {
+        self.with_description(desc)
+    }
+
+    /// Set the tool description.
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
         self
     }
 
     /// Set the parameters JSON schema.
-    pub fn schema(mut self, schema: serde_json::Value) -> Self {
-        self.parameters_schema = schema;
+    pub fn schema(self, schema: serde_json::Value) -> Self {
+        self.with_parameters(schema)
+    }
+
+    /// Set tool-specific instructions.
+    pub fn with_instructions(mut self, instructions: impl Into<String>) -> Self {
+        self.instructions = Some(instructions.into());
+        self
+    }
+
+    /// Set the parameters JSON schema.
+    pub fn with_parameters(mut self, parameters: serde_json::Value) -> Self {
+        self.parameters_schema = parameters;
         self
     }
 
@@ -536,13 +777,23 @@ impl Tool {
     }
 
     /// Mark this tool as overriding a built-in tool.
-    pub fn overrides_built_in_tool(mut self, value: bool) -> Self {
+    pub fn overrides_built_in_tool(self, value: bool) -> Self {
+        self.with_overrides_built_in_tool(value)
+    }
+
+    /// Mark this tool as overriding a built-in tool.
+    pub fn with_overrides_built_in_tool(mut self, value: bool) -> Self {
         self.overrides_built_in_tool = value;
         self
     }
 
     /// Skip permission checks for this tool.
-    pub fn skip_permission(mut self, value: bool) -> Self {
+    pub fn skip_permission(self, value: bool) -> Self {
+        self.with_skip_permission(value)
+    }
+
+    /// Skip permission checks for this tool.
+    pub fn with_skip_permission(mut self, value: bool) -> Self {
         self.skip_permission = value;
         self
     }
@@ -552,7 +803,9 @@ impl std::fmt::Debug for Tool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Tool")
             .field("name", &self.name)
+            .field("namespaced_name", &self.namespaced_name)
             .field("description", &self.description)
+            .field("instructions", &self.instructions)
             .field("overrides_built_in_tool", &self.overrides_built_in_tool)
             .field("skip_permission", &self.skip_permission)
             .finish()
@@ -567,11 +820,19 @@ impl Serialize for Tool {
     {
         use serde::ser::SerializeStruct;
         let field_count = 3
+            + if self.namespaced_name.is_some() { 1 } else { 0 }
+            + if self.instructions.is_some() { 1 } else { 0 }
             + if self.overrides_built_in_tool { 1 } else { 0 }
             + if self.skip_permission { 1 } else { 0 };
         let mut state = serializer.serialize_struct("Tool", field_count)?;
         state.serialize_field("name", &self.name)?;
+        if let Some(namespaced_name) = &self.namespaced_name {
+            state.serialize_field("namespacedName", namespaced_name)?;
+        }
         state.serialize_field("description", &self.description)?;
+        if let Some(instructions) = &self.instructions {
+            state.serialize_field("instructions", instructions)?;
+        }
         state.serialize_field("parameters", &self.parameters_schema)?;
         if self.overrides_built_in_tool {
             state.serialize_field("overridesBuiltInTool", &self.overrides_built_in_tool)?;
@@ -857,8 +1118,22 @@ pub struct SessionConfig {
     pub skill_directories: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled_skills: Option<Vec<String>>,
+
+    /// Enable session hooks on the wire.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hooks: Option<bool>,
+
+    /// Configures the built-in default agent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_agent: Option<DefaultAgentConfig>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "requestPermission")]
     pub request_permission: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_exit_plan_mode: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_auto_mode_switch: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_elicitation: Option<bool>,
     /// Infinite session configuration for automatic context compaction.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub infinite_sessions: Option<InfiniteSessionConfig>,
@@ -884,9 +1159,31 @@ pub struct SessionConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
 
+    // ===== v0.1.49 additions =====
+    /// Enable per-session telemetry events (PR #1224).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_session_telemetry: Option<bool>,
+
+    /// Forward streaming events emitted by sub-agents (PR #1108).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_sub_agent_streaming_events: Option<bool>,
+
+    /// Allow the CLI to discover and apply config files in the working
+    /// directory (and ancestors) (PR #1044).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_config_discovery: Option<bool>,
+
+    /// Per-session instruction directories merged with the global set (PR #1190).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instruction_directories: Option<Vec<String>>,
+
+    /// Remote-session mode for Mission Control integration (PR #1295).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_session: Option<RemoteSessionMode>,
+
     /// Session hooks for pre/post tool use, session lifecycle, etc.
     #[serde(skip)]
-    pub hooks: Option<SessionHooks>,
+    pub session_hooks: Option<SessionHooks>,
 
     /// If true and provider/model not explicitly set, load from `COPILOT_SDK_BYOK_*` env vars.
     ///
@@ -938,6 +1235,26 @@ pub struct ResumeSessionConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
 
+    // ===== v0.1.49 additions (mirror SessionConfig) =====
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_session_telemetry: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_sub_agent_streaming_events: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_config_discovery: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instruction_directories: Option<Vec<String>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_session: Option<RemoteSessionMode>,
+
+    /// Enable session hooks on the wire.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hooks: Option<bool>,
+
     /// If true, skip resuming and create a new session instead.
     #[serde(default, skip_serializing_if = "is_false")]
     pub disable_resume: bool,
@@ -948,7 +1265,7 @@ pub struct ResumeSessionConfig {
 
     /// Session hooks for pre/post tool use, session lifecycle, etc.
     #[serde(skip)]
-    pub hooks: Option<SessionHooks>,
+    pub session_hooks: Option<SessionHooks>,
 
     /// If true and provider not explicitly set, load from `COPILOT_SDK_BYOK_*` env vars.
     ///
@@ -1002,6 +1319,12 @@ pub struct ClientOptions {
     pub cli_url: Option<String>,
     pub log_level: LogLevel,
     pub auto_start: bool,
+    /// Deprecated: no effect, retained for source compatibility.
+    /// Matches upstream nodejs SDK which marks `autoRestart` as deprecated.
+    #[deprecated(
+        since = "0.1.18",
+        note = "auto_restart has no effect and will be removed in a future release"
+    )]
     pub auto_restart: bool,
     pub environment: Option<HashMap<String, String>>,
     /// GitHub personal access token for authentication.
@@ -1052,10 +1375,37 @@ pub struct ClientOptions {
                 + Sync,
         >,
     >,
+
+    // ===== v0.1.49 additions =====
+    /// Connection token for the headless CLI server (TCP only). When the SDK
+    /// spawns its own CLI in TCP mode and this is omitted, a UUID is generated
+    /// automatically so the loopback listener is safe by default. Rejected with
+    /// `use_stdio = true` (stdio is pre-authenticated by pipes).
+    /// Forwarded to the CLI via the COPILOT_CONNECTION_TOKEN environment variable.
+    pub tcp_connection_token: Option<String>,
+
+    /// Custom data directory for the Copilot CLI ($COPILOT_HOME). When omitted,
+    /// the CLI uses its default location (typically ~/.copilot).
+    pub copilot_home: Option<PathBuf>,
+
+    /// Server-wide idle timeout for sessions in seconds.
+    /// Sessions without activity for this duration are automatically cleaned up.
+    /// Set to None (or 0) to disable (sessions live indefinitely).
+    /// Only used when the SDK spawns the CLI process; ignored when connecting
+    /// to an external server via `cli_url`.
+    pub session_idle_timeout_seconds: Option<u32>,
+
+    /// Enable remote session support (Mission Control integration).
+    /// When true, sessions in a GitHub repository working directory are
+    /// accessible from GitHub web and mobile.
+    /// Only used when the SDK spawns the CLI process; ignored when connecting
+    /// to an external server via `cli_url`.
+    pub remote: bool,
 }
 
 impl Default for ClientOptions {
     fn default() -> Self {
+        #[allow(deprecated)]
         Self {
             cli_path: None,
             cli_args: None,
@@ -1065,7 +1415,7 @@ impl Default for ClientOptions {
             cli_url: None,
             log_level: LogLevel::Info,
             auto_start: true,
-            auto_restart: true,
+            auto_restart: false,
             environment: None,
             github_token: None,
             use_logged_in_user: None,
@@ -1074,12 +1424,18 @@ impl Default for ClientOptions {
             allow_all_tools: false,
             telemetry: None,
             on_list_models: None,
+            tcp_connection_token: None,
+            copilot_home: None,
+            session_idle_timeout_seconds: None,
+            remote: false,
         }
     }
 }
 
 impl std::fmt::Debug for ClientOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        #[allow(deprecated)]
+        let auto_restart = self.auto_restart;
         f.debug_struct("ClientOptions")
             .field("cli_path", &self.cli_path)
             .field("cli_args", &self.cli_args)
@@ -1089,7 +1445,7 @@ impl std::fmt::Debug for ClientOptions {
             .field("cli_url", &self.cli_url)
             .field("log_level", &self.log_level)
             .field("auto_start", &self.auto_start)
-            .field("auto_restart", &self.auto_restart)
+            .field("auto_restart", &auto_restart)
             .field("environment", &self.environment)
             .field("github_token", &self.github_token)
             .field("use_logged_in_user", &self.use_logged_in_user)
@@ -1101,12 +1457,22 @@ impl std::fmt::Debug for ClientOptions {
                 "on_list_models",
                 &self.on_list_models.as_ref().map(|_| "Fn(...)"),
             )
+            .field("tcp_connection_token", &self.tcp_connection_token)
+            .field("copilot_home", &self.copilot_home)
+            .field(
+                "session_idle_timeout_seconds",
+                &self.session_idle_timeout_seconds,
+            )
+            .field("remote", &self.remote)
             .finish()
     }
 }
 
 impl Clone for ClientOptions {
     fn clone(&self) -> Self {
+        #[allow(deprecated)]
+        let auto_restart = self.auto_restart;
+        #[allow(deprecated)]
         Self {
             cli_path: self.cli_path.clone(),
             cli_args: self.cli_args.clone(),
@@ -1116,7 +1482,7 @@ impl Clone for ClientOptions {
             cli_url: self.cli_url.clone(),
             log_level: self.log_level,
             auto_start: self.auto_start,
-            auto_restart: self.auto_restart,
+            auto_restart,
             environment: self.environment.clone(),
             github_token: self.github_token.clone(),
             use_logged_in_user: self.use_logged_in_user,
@@ -1125,6 +1491,10 @@ impl Clone for ClientOptions {
             allow_all_tools: self.allow_all_tools,
             telemetry: self.telemetry.clone(),
             on_list_models: self.on_list_models.clone(),
+            tcp_connection_token: self.tcp_connection_token.clone(),
+            copilot_home: self.copilot_home.clone(),
+            session_idle_timeout_seconds: self.session_idle_timeout_seconds,
+            remote: self.remote,
         }
     }
 }
@@ -1132,6 +1502,37 @@ impl Clone for ClientOptions {
 // =============================================================================
 // Response Types
 // =============================================================================
+
+/// Working directory context (cwd, git info) from session creation.
+/// Matches upstream nodejs `SessionContext`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionContext {
+    pub cwd: String,
+    #[serde(default)]
+    pub git_root: Option<String>,
+    /// GitHub repository in `owner/repo` format
+    #[serde(default)]
+    pub repository: Option<String>,
+    /// Current git branch
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
+/// Filter passed to `Client::list_sessions_with_filter`. All fields are optional;
+/// only matching sessions are returned. Matches upstream nodejs `SessionListFilter`.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionListFilter {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+}
 
 /// Metadata about a session.
 #[derive(Debug, Clone, Deserialize)]
@@ -1146,6 +1547,9 @@ pub struct SessionMetadata {
     pub summary: Option<String>,
     #[serde(default)]
     pub is_remote: bool,
+    /// Working directory context from session creation (v0.1.49+).
+    #[serde(default)]
+    pub context: Option<SessionContext>,
 }
 
 /// Response from a ping request.
@@ -1317,6 +1721,112 @@ pub struct UserInputResponse {
 #[serde(rename_all = "camelCase")]
 pub struct UserInputInvocation {
     pub session_id: String,
+}
+
+/// Context for an elicitation request from the server.
+///
+/// Received via `elicitation.request` or `elicitation.requested` when the session
+/// was created with `request_elicitation: true`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElicitationRequest {
+    /// Message describing what information is needed from the user.
+    pub message: String,
+    /// JSON Schema describing the form fields to present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested_schema: Option<Value>,
+    /// Elicitation display mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ElicitationMode>,
+    /// The source that initiated the request (e.g. MCP server name).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elicitation_source: Option<String>,
+    /// URL to open in the user's browser (url mode only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+/// Result returned from an elicitation dialog.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElicitationResult {
+    /// User's action: `"accept"`, `"decline"`, or `"cancel"`.
+    pub action: String,
+    /// Form data submitted by the user (present when action is `"accept"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<Value>,
+}
+
+/// Data sent by the CLI with an `exitPlanMode.request` RPC call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExitPlanModeData {
+    /// Markdown summary of the plan presented to the user.
+    #[serde(default)]
+    pub summary: String,
+    /// Full plan content, if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_content: Option<String>,
+    /// Allowed exit actions.
+    #[serde(default)]
+    pub actions: Vec<String>,
+    /// Which action the CLI recommends.
+    #[serde(default = "default_recommended_action")]
+    pub recommended_action: String,
+}
+
+fn default_recommended_action() -> String {
+    "autopilot".to_string()
+}
+
+impl Default for ExitPlanModeData {
+    fn default() -> Self {
+        Self {
+            summary: String::new(),
+            plan_content: None,
+            actions: Vec::new(),
+            recommended_action: default_recommended_action(),
+        }
+    }
+}
+
+/// Result of an exit-plan-mode request.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExitPlanModeResult {
+    /// Whether the user approved exiting plan mode.
+    pub approved: bool,
+    /// The action the user selected (if any).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_action: Option<String>,
+    /// Optional feedback text from the user.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feedback: Option<String>,
+}
+
+impl Default for ExitPlanModeResult {
+    fn default() -> Self {
+        Self {
+            approved: true,
+            selected_action: None,
+            feedback: None,
+        }
+    }
+}
+
+/// Response to an auto-mode-switch request.
+///
+/// Wire serialization: `"yes"`, `"yes_always"`, or `"no"`.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoModeSwitchResponse {
+    /// Approve the auto-mode switch for this rate-limit cycle only.
+    Yes,
+    /// Approve and remember for this session.
+    YesAlways,
+    /// Decline the switch.
+    No,
 }
 
 // =============================================================================
@@ -1604,19 +2114,23 @@ pub struct TelemetryConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
-    fn test_tool_result_text() {
-        let result = ToolResult::text("Hello, world!");
-        assert_eq!(result.text_result_for_llm, "Hello, world!");
-        assert_eq!(result.result_type, "success");
+    fn tool_result_text_variant() {
+        let result = ToolResult::Text("Hello, world!".into());
+        assert_eq!(
+            serde_json::to_value(&result).unwrap(),
+            json!("Hello, world!")
+        );
     }
 
     #[test]
-    fn test_tool_result_error() {
-        let result = ToolResult::error("Something went wrong");
-        assert_eq!(result.result_type, "error");
-        assert_eq!(result.error, Some("Something went wrong".to_string()));
+    fn tool_result_expanded_variant() {
+        let result = ToolResult::Expanded(ToolResultExpanded::text("Something worked"));
+        let value = serde_json::to_value(&result).unwrap();
+        assert_eq!(value["textResultForLlm"], "Something worked");
+        assert_eq!(value["resultType"], "success");
     }
 
     #[test]
@@ -1643,6 +2157,25 @@ mod tests {
         let config = SessionConfig::default();
         assert!(config.model.is_none());
         assert!(config.tools.is_empty());
+    }
+
+    #[test]
+    fn default_agent_config_serializes_excluded_tools() {
+        let config = DefaultAgentConfig::new().with_excluded_tools(["shell", "write"]);
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(value, json!({"excludedTools": ["shell", "write"]}));
+
+        let round_trip: DefaultAgentConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            round_trip.excluded_tools.unwrap(),
+            vec!["shell".to_string(), "write".to_string()]
+        );
+    }
+
+    #[test]
+    fn default_agent_config_omits_when_empty() {
+        let config = DefaultAgentConfig::default();
+        assert_eq!(serde_json::to_value(&config).unwrap(), json!({}));
     }
 
     #[test]
@@ -1691,6 +2224,20 @@ mod tests {
     }
 
     #[test]
+    fn tool_with_namespaced_name_and_instructions() {
+        let tool = Tool::new("search")
+            .with_namespaced_name("local/search")
+            .with_instructions("Use ripgrep")
+            .with_parameters(json!({"type": "object"}));
+
+        let value = serde_json::to_value(&tool).unwrap();
+
+        assert_eq!(value["namespacedName"], "local/search");
+        assert_eq!(value["instructions"], "Use ripgrep");
+        assert_eq!(value["parameters"]["type"], "object");
+    }
+
+    #[test]
     fn test_user_input_request_roundtrip() {
         let req = UserInputRequest {
             question: "What color?".into(),
@@ -1727,6 +2274,134 @@ mod tests {
         assert_eq!(req.question, "Yes or no?");
         assert!(req.choices.is_none());
         assert!(req.allow_freeform.is_none());
+    }
+
+    #[test]
+    fn elicitation_request_round_trip_all_fields() {
+        let request = ElicitationRequest {
+            message: "Tell us more".into(),
+            requested_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "email": { "type": "string", "format": "email" }
+                },
+                "required": ["email"]
+            })),
+            mode: Some(ElicitationMode::Url),
+            elicitation_source: Some("mcp-server".into()),
+            url: Some("https://example.test/form".into()),
+        };
+
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["message"], "Tell us more");
+        assert_eq!(value["requestedSchema"]["type"], "object");
+        assert_eq!(value["mode"], "url");
+        assert_eq!(value["elicitationSource"], "mcp-server");
+        assert_eq!(value["url"], "https://example.test/form");
+
+        let round_trip: ElicitationRequest = serde_json::from_value(value).unwrap();
+        assert_eq!(round_trip.message, "Tell us more");
+        assert_eq!(
+            round_trip.requested_schema.unwrap()["required"],
+            json!(["email"])
+        );
+        assert!(matches!(round_trip.mode, Some(ElicitationMode::Url)));
+        assert_eq!(round_trip.elicitation_source.as_deref(), Some("mcp-server"));
+        assert_eq!(round_trip.url.as_deref(), Some("https://example.test/form"));
+    }
+
+    #[test]
+    fn elicitation_result_round_trip_accept_and_cancel() {
+        let accept = ElicitationResult {
+            action: "accept".into(),
+            content: Some(json!({"email": "user@example.test"})),
+        };
+        let accept_value = serde_json::to_value(&accept).unwrap();
+        assert_eq!(accept_value["action"], "accept");
+        assert_eq!(accept_value["content"]["email"], "user@example.test");
+
+        let accept_round_trip: ElicitationResult = serde_json::from_value(accept_value).unwrap();
+        assert_eq!(accept_round_trip.action, "accept");
+        assert_eq!(
+            accept_round_trip.content.unwrap()["email"],
+            "user@example.test"
+        );
+
+        let cancel = ElicitationResult {
+            action: "cancel".into(),
+            content: None,
+        };
+        let cancel_value = serde_json::to_value(&cancel).unwrap();
+        assert_eq!(cancel_value["action"], "cancel");
+        assert!(cancel_value.get("content").is_none());
+
+        let cancel_round_trip: ElicitationResult = serde_json::from_value(cancel_value).unwrap();
+        assert_eq!(cancel_round_trip.action, "cancel");
+        assert!(cancel_round_trip.content.is_none());
+    }
+
+    #[test]
+    fn exit_plan_mode_data_round_trip_and_default() {
+        let data = ExitPlanModeData {
+            summary: "Need approval to leave plan mode".into(),
+            plan_content: Some("## Plan\n1. Do it".into()),
+            actions: vec!["autopilot".into(), "chat".into()],
+            recommended_action: "chat".into(),
+        };
+
+        let value = serde_json::to_value(&data).unwrap();
+        assert_eq!(value["summary"], "Need approval to leave plan mode");
+        assert_eq!(value["planContent"], "## Plan\n1. Do it");
+        assert_eq!(value["actions"], json!(["autopilot", "chat"]));
+        assert_eq!(value["recommendedAction"], "chat");
+
+        let round_trip: ExitPlanModeData = serde_json::from_value(value).unwrap();
+        assert_eq!(round_trip.summary, "Need approval to leave plan mode");
+        assert_eq!(
+            round_trip.plan_content.as_deref(),
+            Some("## Plan\n1. Do it")
+        );
+        assert_eq!(round_trip.actions, vec!["autopilot", "chat"]);
+        assert_eq!(round_trip.recommended_action, "chat");
+
+        let default_value = serde_json::to_value(ExitPlanModeData::default()).unwrap();
+        assert_eq!(default_value["summary"], "");
+        assert_eq!(default_value["actions"], json!([]));
+        assert_eq!(default_value["recommendedAction"], "autopilot");
+        assert!(default_value.get("planContent").is_none());
+    }
+
+    #[test]
+    fn exit_plan_mode_result_serializes_custom_and_default() {
+        let approved = ExitPlanModeResult {
+            approved: false,
+            selected_action: Some("chat".into()),
+            feedback: Some("Need another revision".into()),
+        };
+        let approved_value = serde_json::to_value(&approved).unwrap();
+        assert_eq!(approved_value["approved"], false);
+        assert_eq!(approved_value["selectedAction"], "chat");
+        assert_eq!(approved_value["feedback"], "Need another revision");
+
+        let default_value = serde_json::to_value(ExitPlanModeResult::default()).unwrap();
+        assert_eq!(default_value["approved"], true);
+        assert!(default_value.get("selectedAction").is_none());
+        assert!(default_value.get("feedback").is_none());
+    }
+
+    #[test]
+    fn auto_mode_switch_response_serializes_all_variants() {
+        for (response, wire) in [
+            (AutoModeSwitchResponse::Yes, "yes"),
+            (AutoModeSwitchResponse::YesAlways, "yes_always"),
+            (AutoModeSwitchResponse::No, "no"),
+        ] {
+            assert_eq!(serde_json::to_value(response).unwrap(), json!(wire));
+            assert_eq!(
+                serde_json::from_value::<AutoModeSwitchResponse>(json!(wire)).unwrap(),
+                response
+            );
+        }
     }
 
     #[test]
@@ -1800,6 +2475,84 @@ mod tests {
         let j = serde_json::json!("selection");
         let at: AttachmentType = serde_json::from_value(j).unwrap();
         assert_eq!(at, AttachmentType::Selection);
+    }
+
+    #[test]
+    fn delivery_mode_round_trip() {
+        for (mode, wire) in [
+            (DeliveryMode::Enqueue, "enqueue"),
+            (DeliveryMode::Immediate, "immediate"),
+        ] {
+            assert_eq!(serde_json::to_value(mode).unwrap(), json!(wire));
+            assert_eq!(
+                serde_json::from_value::<DeliveryMode>(json!(wire)).unwrap(),
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn github_reference_type_round_trip() {
+        for (reference_type, wire) in [
+            (GitHubReferenceType::Issue, "issue"),
+            (GitHubReferenceType::Pr, "pr"),
+            (GitHubReferenceType::Discussion, "discussion"),
+        ] {
+            assert_eq!(serde_json::to_value(reference_type).unwrap(), json!(wire));
+            assert_eq!(
+                serde_json::from_value::<GitHubReferenceType>(json!(wire)).unwrap(),
+                reference_type
+            );
+        }
+    }
+
+    #[test]
+    fn elicitation_mode_round_trip() {
+        assert_eq!(
+            serde_json::to_value(&ElicitationMode::Form).unwrap(),
+            json!("form")
+        );
+        assert_eq!(
+            serde_json::to_value(&ElicitationMode::Url).unwrap(),
+            json!("url")
+        );
+        assert_eq!(
+            serde_json::from_value::<ElicitationMode>(json!("form")).unwrap(),
+            ElicitationMode::Form
+        );
+        assert_eq!(
+            serde_json::from_value::<ElicitationMode>(json!("url")).unwrap(),
+            ElicitationMode::Url
+        );
+        assert_eq!(
+            serde_json::from_value::<ElicitationMode>(json!("future-mode")).unwrap(),
+            ElicitationMode::Unknown
+        );
+    }
+
+    #[test]
+    fn permission_request_kind_round_trip() {
+        for (kind, wire) in [
+            (PermissionRequestKind::Shell, "shell"),
+            (PermissionRequestKind::Write, "write"),
+            (PermissionRequestKind::Read, "read"),
+            (PermissionRequestKind::Url, "url"),
+            (PermissionRequestKind::Mcp, "mcp"),
+            (PermissionRequestKind::CustomTool, "custom-tool"),
+            (PermissionRequestKind::Memory, "memory"),
+            (PermissionRequestKind::Hook, "hook"),
+        ] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), json!(wire));
+            assert_eq!(
+                serde_json::from_value::<PermissionRequestKind>(json!(wire)).unwrap(),
+                kind
+            );
+        }
+
+        assert_eq!(
+            serde_json::from_value::<PermissionRequestKind>(json!("brand-new-kind")).unwrap(),
+            PermissionRequestKind::Unknown
+        );
     }
 
     #[test]
@@ -1930,15 +2683,33 @@ mod tests {
     #[test]
     fn test_hooks_not_serialized_in_config() {
         let config = SessionConfig {
-            hooks: Some(SessionHooks {
+            session_hooks: Some(SessionHooks {
                 on_pre_tool_use: Some(Arc::new(|_| PreToolUseHookOutput::default())),
                 ..Default::default()
             }),
             ..Default::default()
         };
         let json = serde_json::to_value(&config).unwrap();
-        // hooks field should be skipped from serialization
+        // session_hooks should be skipped from serialization
         assert!(json.get("hooks").is_none());
+        assert!(json.get("sessionHooks").is_none());
+    }
+
+    #[test]
+    fn session_config_hooks_bool_serializes_but_session_hooks_stays_skipped() {
+        let config = SessionConfig {
+            hooks: Some(true),
+            session_hooks: Some(SessionHooks {
+                on_pre_tool_use: Some(Arc::new(|_| PreToolUseHookOutput::default())),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(value["hooks"], true);
+        assert!(value.get("sessionHooks").is_none());
+        assert!(value.get("session_hooks").is_none());
     }
 
     #[test]
@@ -1998,6 +2769,30 @@ mod tests {
         let value = serde_json::to_value(&config).unwrap();
         assert_eq!(value["clientName"], "my-app");
         assert_eq!(value["agent"], "code-reviewer");
+    }
+
+    #[test]
+    fn session_config_new_wire_fields() {
+        let config = SessionConfig {
+            request_exit_plan_mode: Some(false),
+            request_auto_mode_switch: Some(true),
+            request_elicitation: Some(true),
+            default_agent: Some(DefaultAgentConfig::new().with_excluded_tools(["shell"])),
+            hooks: Some(true),
+            session_hooks: Some(SessionHooks {
+                on_pre_tool_use: Some(Arc::new(|_| PreToolUseHookOutput::default())),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(value["requestExitPlanMode"], false);
+        assert_eq!(value["requestAutoModeSwitch"], true);
+        assert_eq!(value["requestElicitation"], true);
+        assert_eq!(value["hooks"], true);
+        assert_eq!(value["defaultAgent"]["excludedTools"], json!(["shell"]));
+        assert!(value.get("sessionHooks").is_none());
     }
 
     #[test]
@@ -2109,5 +2904,90 @@ mod tests {
         let value = serde_json::to_value(&config).unwrap();
         assert_eq!(value["clientName"], "my-cli");
         assert_eq!(value["agent"], "helper");
+    }
+
+    // =========================================================================
+    // v0.1.49 SessionConfig / ResumeSessionConfig additive fields
+    // =========================================================================
+
+    #[test]
+    fn test_remote_session_mode_serialize() {
+        let v: serde_json::Value = serde_json::to_value(RemoteSessionMode::Off).unwrap();
+        assert_eq!(v, serde_json::json!("off"));
+        let v: serde_json::Value = serde_json::to_value(RemoteSessionMode::Export).unwrap();
+        assert_eq!(v, serde_json::json!("export"));
+        let v: serde_json::Value = serde_json::to_value(RemoteSessionMode::On).unwrap();
+        assert_eq!(v, serde_json::json!("on"));
+        let parsed: RemoteSessionMode =
+            serde_json::from_value(serde_json::json!("export")).unwrap();
+        assert_eq!(parsed, RemoteSessionMode::Export);
+    }
+
+    #[test]
+    fn test_session_config_v0149_fields_omitted_by_default() {
+        let cfg = SessionConfig::default();
+        let v = serde_json::to_value(&cfg).unwrap();
+        assert!(v.get("enableSessionTelemetry").is_none());
+        assert!(v.get("includeSubAgentStreamingEvents").is_none());
+        assert!(v.get("enableConfigDiscovery").is_none());
+        assert!(v.get("instructionDirectories").is_none());
+        assert!(v.get("remoteSession").is_none());
+    }
+
+    #[test]
+    fn test_session_config_v0149_fields_serialize() {
+        let cfg = SessionConfig {
+            enable_session_telemetry: Some(true),
+            include_sub_agent_streaming_events: Some(false),
+            enable_config_discovery: Some(true),
+            instruction_directories: Some(vec!["/a".into(), "/b".into()]),
+            remote_session: Some(RemoteSessionMode::Export),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(v["enableSessionTelemetry"], true);
+        assert_eq!(v["includeSubAgentStreamingEvents"], false);
+        assert_eq!(v["enableConfigDiscovery"], true);
+        assert_eq!(v["instructionDirectories"], serde_json::json!(["/a", "/b"]));
+        assert_eq!(v["remoteSession"], "export");
+    }
+
+    #[test]
+    fn test_resume_session_config_v0149_fields_serialize() {
+        let cfg = ResumeSessionConfig {
+            client_name: Some("my-app".into()),
+            instruction_directories: Some(vec!["/x".into()]),
+            remote_session: Some(RemoteSessionMode::On),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(v["clientName"], "my-app");
+        assert_eq!(v["instructionDirectories"], serde_json::json!(["/x"]));
+        assert_eq!(v["remoteSession"], "on");
+    }
+
+    #[test]
+    fn custom_agent_config_builder_with_model() {
+        let agent = CustomAgentConfig::new("my-agent", "You are helpful.")
+            .with_model("claude-haiku-4.5")
+            .with_display_name("My Agent");
+        assert_eq!(agent.name, "my-agent");
+        assert_eq!(agent.model.as_deref(), Some("claude-haiku-4.5"));
+        assert_eq!(agent.display_name.as_deref(), Some("My Agent"));
+    }
+
+    #[test]
+    fn custom_agent_config_serializes_model() {
+        let agent = CustomAgentConfig::new("model-agent", "prompt").with_model("claude-haiku-4.5");
+        let wire = serde_json::to_value(&agent).unwrap();
+        assert_eq!(wire["model"], "claude-haiku-4.5");
+        assert_eq!(wire["name"], "model-agent");
+    }
+
+    #[test]
+    fn custom_agent_config_omits_model_when_none() {
+        let agent = CustomAgentConfig::new("no-model-agent", "prompt");
+        let wire = serde_json::to_value(&agent).unwrap();
+        assert!(wire.get("model").is_none());
     }
 }

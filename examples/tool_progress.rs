@@ -8,7 +8,7 @@
 //! 2. Monitor ToolExecutionStart, ToolExecutionProgress, and ToolExecutionComplete
 //! 3. Display real-time progress updates during tool execution
 
-use copilot_sdk::{Client, SessionConfig, SessionEventData, Tool, ToolResultObject};
+use copilot_sdk::{Client, SessionConfig, SessionEventData, Tool, ToolResult};
 use std::io::Write;
 use std::sync::Arc;
 
@@ -49,7 +49,7 @@ async fn main() -> copilot_sdk::Result<()> {
                     .and_then(|v| v.as_str())
                     .unwrap_or("Hello World");
                 let count = text.split_whitespace().count();
-                ToolResultObject::text(format!("The text contains {} word(s).", count))
+                ToolResult::text(format!("The text contains {} word(s).", count))
             })),
         )
         .await;
@@ -62,7 +62,7 @@ async fn main() -> copilot_sdk::Result<()> {
                     .get("query")
                     .and_then(|v| v.as_str())
                     .unwrap_or("example");
-                ToolResultObject::text(format!(
+                ToolResult::text(format!(
                     "Search results for '{query}':\n\
                      1. README.md - line 42: contains '{query}'\n\
                      2. main.rs - line 7: references '{query}'\n\

@@ -3,7 +3,7 @@
 
 //! Multi-tools example demonstrating multiple custom tools.
 
-use copilot_sdk::{Client, SessionConfig, SessionEventData, Tool, ToolHandler, ToolResultObject};
+use copilot_sdk::{Client, SessionConfig, SessionEventData, Tool, ToolHandler, ToolResult};
 use std::io::{self, Write};
 use std::sync::Arc;
 
@@ -71,7 +71,7 @@ async fn main() -> copilot_sdk::Result<()> {
             }
             _ => f64::NAN,
         };
-        ToolResultObject::text(format!("{}", result))
+        ToolResult::text(format!("{}", result))
     });
     session
         .register_tool_with_handler(calculator, Some(calc_handler))
@@ -79,7 +79,7 @@ async fn main() -> copilot_sdk::Result<()> {
 
     let echo_handler: ToolHandler = Arc::new(|_, args| {
         let msg = args.get("message").and_then(|v| v.as_str()).unwrap_or("");
-        ToolResultObject::text(format!("Echo: {}", msg))
+        ToolResult::text(format!("Echo: {}", msg))
     });
     session
         .register_tool_with_handler(echo, Some(echo_handler))
@@ -89,7 +89,7 @@ async fn main() -> copilot_sdk::Result<()> {
         let min = args.get("min").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
         let max = args.get("max").and_then(|v| v.as_i64()).unwrap_or(100) as i32;
         let result = min + (rand::random::<u32>() % (max - min + 1) as u32) as i32;
-        ToolResultObject::text(format!("{}", result))
+        ToolResult::text(format!("{}", result))
     });
     session
         .register_tool_with_handler(random, Some(random_handler))

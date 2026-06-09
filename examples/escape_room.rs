@@ -8,7 +8,7 @@
 
 use copilot_sdk::{
     find_copilot_cli, Client, LogLevel, SessionConfig, SessionEventData, SystemMessageConfig,
-    SystemMessageMode, Tool, ToolHandler, ToolResultObject,
+    SystemMessageMode, Tool, ToolHandler, ToolResult,
 };
 use std::io::{self, Write};
 use std::sync::Arc;
@@ -137,10 +137,10 @@ async fn main() -> copilot_sdk::Result<()> {
 
     let prime_factors_handler: ToolHandler = Arc::new(|_name, args| {
         let Some(n) = args.get("n").and_then(|v| v.as_u64()) else {
-            return ToolResultObject::error(r#"Expected arguments: {"n": integer}"#);
+            return ToolResult::error(r#"Expected arguments: {"n": integer}"#);
         };
         let factors = prime_factors(n);
-        ToolResultObject::text(
+        ToolResult::text(
             serde_json::json!({ "n": n, "factors": factors, "count": factors.len() }).to_string(),
         )
     });
@@ -150,17 +150,13 @@ async fn main() -> copilot_sdk::Result<()> {
 
     let caesar_handler: ToolHandler = Arc::new(|_name, args| {
         let Some(text) = args.get("text").and_then(|v| v.as_str()) else {
-            return ToolResultObject::error(
-                r#"Expected arguments: {"text": string, "shift": integer}"#,
-            );
+            return ToolResult::error(r#"Expected arguments: {"text": string, "shift": integer}"#);
         };
         let Some(shift) = args.get("shift").and_then(|v| v.as_i64()) else {
-            return ToolResultObject::error(
-                r#"Expected arguments: {"text": string, "shift": integer}"#,
-            );
+            return ToolResult::error(r#"Expected arguments: {"text": string, "shift": integer}"#);
         };
         let shift = shift as i32;
-        ToolResultObject::text(caesar_shift(text, shift))
+        ToolResult::text(caesar_shift(text, shift))
     });
     session
         .register_tool_with_handler(tool_caesar, Some(caesar_handler))
@@ -168,9 +164,9 @@ async fn main() -> copilot_sdk::Result<()> {
 
     let checksum_handler: ToolHandler = Arc::new(|_name, args| {
         let Some(text) = args.get("text").and_then(|v| v.as_str()) else {
-            return ToolResultObject::error(r#"Expected arguments: {"text": string}"#);
+            return ToolResult::error(r#"Expected arguments: {"text": string}"#);
         };
-        ToolResultObject::text(format!("{}", checksum8(text)))
+        ToolResult::text(format!("{}", checksum8(text)))
     });
     session
         .register_tool_with_handler(tool_checksum8, Some(checksum_handler))
