@@ -8,7 +8,7 @@
 //! - Register tool handlers
 //! - Have the assistant use your tools
 
-use copilot_sdk::{Client, SessionConfig, SessionEventData, Tool, ToolHandler, ToolResultObject};
+use copilot_sdk::{Client, SessionConfig, SessionEventData, Tool, ToolHandler, ToolResult};
 use std::sync::Arc;
 
 #[cfg(feature = "schemars")]
@@ -75,7 +75,7 @@ async fn main() -> copilot_sdk::Result<()> {
             TemperatureUnit::Fahrenheit => (72, "°F"),
         };
 
-        ToolResultObject::text(format!(
+        ToolResult::text(format!(
             "The weather in {} is sunny with a temperature of {}{}",
             parsed.location, temp, symbol
         ))
@@ -99,7 +99,7 @@ async fn main() -> copilot_sdk::Result<()> {
             (72, "°F")
         };
 
-        ToolResultObject::text(format!(
+        ToolResult::text(format!(
             "The weather in {} is sunny with a temperature of {}{}",
             location, temp, symbol
         ))

@@ -12,7 +12,7 @@ use crate::types::{
     AgentInfo, ErrorOccurredHookInput, FleetStartOptions, LogOptions, LogResult, MessageOptions,
     PermissionRequest, PermissionRequestResult, PlanData, PostToolUseHookInput,
     PreToolUseHookInput, SessionEndHookInput, SessionHooks, SessionMode, SessionStartHookInput,
-    SetModelOptions, ShellExecOptions, ShellExecResult, ShellSignal, Tool, ToolResultObject,
+    SetModelOptions, ShellExecOptions, ShellExecResult, ShellSignal, Tool, ToolResult,
     UserInputInvocation, UserInputRequest, UserInputResponse, UserPromptSubmittedHookInput,
     WorkspaceFile,
 };
@@ -35,7 +35,7 @@ pub type PermissionHandler =
     Arc<dyn Fn(&PermissionRequest) -> PermissionRequestResult + Send + Sync>;
 
 /// Handler for tool invocations.
-pub type ToolHandler = Arc<dyn Fn(&str, &Value) -> ToolResultObject + Send + Sync>;
+pub type ToolHandler = Arc<dyn Fn(&str, &Value) -> ToolResult + Send + Sync>;
 
 /// Handler for user input requests.
 pub type UserInputHandler =
@@ -274,25 +274,23 @@ impl Session {
                 // Execute tool and respond via handlePendingToolCall RPC
                 match self.invoke_tool(&tool_name, &arguments).await {
                     Ok(result) => {
-                        // If the tool reported a failure with an error, send via top-level error
-                        let params = if result.result_type == "failure"
-                            || result.result_type == "error"
-                        {
-                            serde_json::json!({
+                        // If the tool reported a failure with an error, send via top-level error.
+                        let params = match &result {
+                            ToolResult::Expanded(expanded)
+                                if expanded.result_type == "failure"
+                                    || expanded.result_type == "error" =>
+                            {
+                                serde_json::json!({
+                                    "sessionId": session_id,
+                                    "requestId": request_id,
+                                    "error": expanded.error.clone().unwrap_or_else(|| expanded.text_result_for_llm.clone()),
+                                })
+                            }
+                            _ => serde_json::json!({
                                 "sessionId": session_id,
                                 "requestId": request_id,
-                                "error": result.error.unwrap_or_else(|| result.text_result_for_llm.clone()),
-                            })
-                        } else {
-                            serde_json::json!({
-                                "sessionId": session_id,
-                                "requestId": request_id,
-                                "result": {
-                                    "textResultForLlm": result.text_result_for_llm,
-                                    "resultType": result.result_type,
-                                    "toolTelemetry": result.tool_telemetry.unwrap_or_default(),
-                                }
-                            })
+                                "result": serde_json::to_value(&result).unwrap_or(Value::Null),
+                            }),
                         };
                         let _ = (self.invoke_fn)(
                             rpc_methods::SESSION_TOOLS_HANDLE_PENDING_TOOL_CALL,
@@ -488,7 +486,7 @@ impl Session {
     }
 
     /// Invoke a tool handler.
-    pub async fn invoke_tool(&self, name: &str, arguments: &Value) -> Result<ToolResultObject> {
+    pub async fn invoke_tool(&self, name: &str, arguments: &Value) -> Result<ToolResult> {
         let state = self.state.read().await;
         let registered = state
             .tools
@@ -1140,7 +1138,7 @@ mod tests {
         let tool = Tool::new("echo").description("Echo tool");
         let handler: ToolHandler = Arc::new(|_name, args| {
             let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("empty");
-            ToolResultObject::text(text)
+            ToolResult::text(text)
         });
 
         session
@@ -1152,7 +1150,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result.text_result_for_llm, "hello");
+        assert!(matches!(result, ToolResult::Text(ref text) if text == "hello"));
     }
 
     #[tokio::test]
@@ -1259,7 +1257,7 @@ mod tests {
             .register_tool_with_handler(
                 Tool::new("echo").description("Echo tool"),
                 Some(Arc::new(|_name, args| {
-                    ToolResultObject::text(
+                    ToolResult::text(
                         args.get("text")
                             .and_then(|v| v.as_str())
                             .unwrap_or("missing"),
@@ -1294,8 +1292,7 @@ mod tests {
         assert_eq!(calls[0].0, "session.tools.handlePendingToolCall");
         assert_eq!(calls[0].1["sessionId"], "test");
         assert_eq!(calls[0].1["requestId"], "req-tool-1");
-        assert_eq!(calls[0].1["result"]["textResultForLlm"], "hello");
-        assert_eq!(calls[0].1["result"]["resultType"], "success");
+        assert_eq!(calls[0].1["result"], "hello");
     }
 
     #[tokio::test]

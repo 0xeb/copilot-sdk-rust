@@ -4,8 +4,7 @@
 //! Resume session example with new tools.
 
 use copilot_sdk::{
-    Client, ResumeSessionConfig, SessionConfig, SessionEventData, Tool, ToolHandler,
-    ToolResultObject,
+    Client, ResumeSessionConfig, SessionConfig, SessionEventData, Tool, ToolHandler, ToolResult,
 };
 use std::io::{self, Write};
 use std::sync::Arc;
@@ -37,7 +36,7 @@ async fn main() -> copilot_sdk::Result<()> {
             .get("name")
             .and_then(|v| v.as_str())
             .unwrap_or("friend");
-        ToolResultObject::text(format!("Hello, {}!", name))
+        ToolResult::text(format!("Hello, {}!", name))
     });
     session1
         .register_tool_with_handler(greet_tool, Some(greet_handler))
@@ -84,7 +83,7 @@ async fn main() -> copilot_sdk::Result<()> {
             .get("name")
             .and_then(|v| v.as_str())
             .unwrap_or("friend");
-        ToolResultObject::text(format!("Goodbye, {}!", name))
+        ToolResult::text(format!("Goodbye, {}!", name))
     });
     session2
         .register_tool_with_handler(farewell_tool, Some(farewell_handler))

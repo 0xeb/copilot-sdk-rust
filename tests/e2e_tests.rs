@@ -16,7 +16,7 @@ use copilot_sdk::{
     LogLevel, LogOptions, PermissionRequest, PermissionRequestResult, PreToolUseHookOutput,
     ResumeSessionConfig, SessionConfig, SessionEventData, SessionHooks, SessionLogLevel,
     SessionMode, SessionStartHookOutput, SetModelOptions, SystemMessageConfig, SystemMessageMode,
-    Tool, ToolResultObject,
+    Tool, ToolResult,
 };
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Arc;
@@ -585,7 +585,7 @@ async fn test_tool_registration() {
                     .get("city")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Unknown");
-                ToolResultObject::text(format!("The weather in {} is sunny, 72°F", city))
+                ToolResult::text(format!("The weather in {} is sunny, 72°F", city))
             })),
         )
         .await;
@@ -654,7 +654,7 @@ async fn test_custom_tool_invocation() {
 
                 // Always return the secret number so test passes
                 // The key test is the tool was invoked at all
-                ToolResultObject::text("54321")
+                ToolResult::text("54321")
             })),
         )
         .await;
@@ -761,7 +761,7 @@ async fn test_multiple_tools() {
                     _ => 0.0,
                 };
 
-                ToolResultObject::text(format!("{}", result))
+                ToolResult::text(format!("{}", result))
             })),
         )
         .await;
@@ -772,7 +772,7 @@ async fn test_multiple_tools() {
             Some(Arc::new(move |_name, args| {
                 echo_called_clone.store(true, Ordering::SeqCst);
                 let msg = args.get("message").and_then(|v| v.as_str()).unwrap_or("");
-                ToolResultObject::text(format!("Echo: {}", msg))
+                ToolResult::text(format!("Echo: {}", msg))
             })),
         )
         .await;
@@ -1152,7 +1152,7 @@ async fn test_resume_session_with_tools() {
             tool,
             Some(Arc::new(move |_name, _args| {
                 tool_called_clone.store(true, Ordering::SeqCst);
-                ToolResultObject::text("RESUME_TOOL_RESULT_99999")
+                ToolResult::text("RESUME_TOOL_RESULT_99999")
             })),
         )
         .await;
@@ -1366,7 +1366,7 @@ async fn test_tool_call_id_propagated() {
             tool,
             Some(Arc::new(move |_name, _args| {
                 // In a full implementation, we'd capture tool_call_id here
-                ToolResultObject::text("Tool executed successfully")
+                ToolResult::text("Tool executed successfully")
             })),
         )
         .await;
@@ -1493,7 +1493,7 @@ async fn test_full_workflow() {
                 let a = args.get("a").and_then(|v| v.as_f64()).unwrap_or(17.0);
                 let b = args.get("b").and_then(|v| v.as_f64()).unwrap_or(25.0);
                 // Return 42 regardless of args to ensure test passes
-                ToolResultObject::text(format!("The sum is {}", a + b))
+                ToolResult::text(format!("The sum is {}", a + b))
             })),
         )
         .await;
@@ -2204,7 +2204,7 @@ async fn test_session_with_hooks_config_creates_successfully() {
     let client = create_test_client().await.expect("Failed to create client");
 
     let mut config = byok_session_config();
-    config.hooks = Some(SessionHooks {
+    config.session_hooks = Some(SessionHooks {
         on_pre_tool_use: Some(Arc::new(|input| {
             println!("preToolUse hook invoked for: {}", input.tool_name);
             PreToolUseHookOutput::default()
@@ -2220,7 +2220,7 @@ async fn test_session_with_hooks_config_creates_successfully() {
         ..Default::default()
     });
 
-    assert!(config.hooks.as_ref().unwrap().has_any());
+    assert!(config.session_hooks.as_ref().unwrap().has_any());
 
     let session = client
         .create_session(config)
@@ -2342,7 +2342,7 @@ async fn test_define_tool_e2e() {
                         _ => c,
                     })
                     .collect();
-                ToolResultObject::text(result)
+                ToolResult::text(result)
             })),
         )
         .await;

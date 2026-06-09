@@ -63,6 +63,9 @@ pub use types::{
     ClientOptions,
     ConnectionState,
     CustomAgentConfig,
+    DefaultAgentConfig,
+    DeliveryMode,
+    ElicitationMode,
     // Hook types
     ErrorOccurredHandler,
     ErrorOccurredHookInput,
@@ -72,7 +75,9 @@ pub use types::{
     GetAuthStatusResponse,
     GetForegroundSessionResponse,
     GetStatusResponse,
+    GitHubReferenceType,
     InfiniteSessionConfig,
+    InputFormat,
     LogLevel,
     LogOptions,
     LogResult,
@@ -89,6 +94,7 @@ pub use types::{
     ModelVisionLimits,
     // Permission types
     PermissionRequest,
+    PermissionRequestKind,
     PermissionRequestResult,
     PingResponse,
     PlanData,
@@ -141,7 +147,7 @@ pub use types::{
     ToolInfo,
     ToolInvocation,
     ToolResult,
-    ToolResultObject,
+    ToolResultExpanded,
     ToolsListResult,
     // User input types
     UserInputInvocation,

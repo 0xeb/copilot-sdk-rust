@@ -38,7 +38,7 @@ async fn main() -> copilot_sdk::Result<()> {
     let log5 = log_hook.clone();
 
     let config = SessionConfig {
-        hooks: Some(SessionHooks {
+        session_hooks: Some(SessionHooks {
             on_pre_tool_use: Some(Arc::new(move |input| {
                 log1("PreToolUse", &format!("Tool: {}", input.tool_name));
 

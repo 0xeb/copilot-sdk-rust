@@ -79,6 +79,74 @@ pub enum RemoteSessionMode {
     On,
 }
 
+/// Type of GitHub reference attachment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum GitHubReferenceType {
+    Issue,
+    Pr,
+    Discussion,
+}
+
+/// Message delivery mode for message sending.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum DeliveryMode {
+    Enqueue,
+    Immediate,
+}
+
+/// Elicitation display mode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub enum ElicitationMode {
+    Form,
+    Url,
+    #[serde(other)]
+    Unknown,
+}
+
+/// Semantic format hints for text input fields.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub enum InputFormat {
+    Email,
+    Uri,
+    Date,
+    DateTime,
+}
+
+impl InputFormat {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Email => "email",
+            Self::Uri => "uri",
+            Self::Date => "date",
+            Self::DateTime => "date-time",
+        }
+    }
+}
+
+/// Permission categories the CLI may request approval for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
+pub enum PermissionRequestKind {
+    Shell,
+    Write,
+    Read,
+    Url,
+    Mcp,
+    CustomTool,
+    Memory,
+    Hook,
+    #[serde(other)]
+    Unknown,
+}
+
 impl std::fmt::Display for LogLevel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -108,10 +176,10 @@ pub struct ToolBinaryResult {
     pub description: Option<String>,
 }
 
-/// Result object returned from tool execution.
+/// Expanded result object returned from tool execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ToolResultObject {
+pub struct ToolResultExpanded {
     pub text_result_for_llm: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub binary_results_for_llm: Option<Vec<ToolBinaryResult>>,
@@ -129,7 +197,7 @@ fn default_result_type() -> String {
     "success".to_string()
 }
 
-impl ToolResultObject {
+impl ToolResultExpanded {
     /// Create a success result with text.
     pub fn text(result: impl Into<String>) -> Self {
         Self {
@@ -155,8 +223,30 @@ impl ToolResultObject {
     }
 }
 
-/// Convenient alias for tool results.
-pub type ToolResult = ToolResultObject;
+/// Result of a tool invocation — either a plain text string or an expanded result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+#[non_exhaustive]
+pub enum ToolResult {
+    Text(String),
+    Expanded(ToolResultExpanded),
+}
+
+impl ToolResult {
+    pub fn text(result: impl Into<String>) -> Self {
+        Self::Text(result.into())
+    }
+
+    pub fn error(message: impl Into<String>) -> Self {
+        Self::Expanded(ToolResultExpanded::error(message))
+    }
+}
+
+impl From<ToolResultExpanded> for ToolResult {
+    fn from(result: ToolResultExpanded) -> Self {
+        Self::Expanded(result)
+    }
+}
 
 /// Information about a tool invocation from the server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -479,6 +569,30 @@ impl CustomAgentConfig {
     }
 }
 
+/// Configures the default (built-in) agent that handles turns when no custom
+/// agent is selected.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DefaultAgentConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excluded_tools: Option<Vec<String>>,
+}
+
+impl DefaultAgentConfig {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_excluded_tools<I, S>(mut self, tools: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.excluded_tools = Some(tools.into_iter().map(Into::into).collect());
+        self
+    }
+}
+
 // =============================================================================
 // Attachment Types
 // =============================================================================
@@ -501,7 +615,7 @@ pub struct UserMessageAttachment {
 ///
 /// Use the builder pattern to create tools:
 /// ```no_run
-/// use copilot_sdk::{Client, SessionConfig, Tool, ToolHandler, ToolResultObject};
+/// use copilot_sdk::{Client, SessionConfig, Tool, ToolHandler, ToolResult};
 /// use std::sync::Arc;
 ///
 /// #[tokio::main]
@@ -524,21 +638,47 @@ pub struct UserMessageAttachment {
 ///
 /// let handler: ToolHandler = Arc::new(|_name, args| {
 ///     let city = args.get("city").and_then(|v| v.as_str()).unwrap_or("unknown");
-///     ToolResultObject::text(format!("Weather in {}: sunny", city))
+///     ToolResult::text(format!("Weather in {}: sunny", city))
 /// });
 /// session.register_tool_with_handler(tool, Some(handler)).await;
 /// client.stop().await;
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Clone)]
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Tool {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespaced_name: Option<String>,
     pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    #[serde(rename = "parameters", default = "empty_parameters_schema")]
     pub parameters_schema: serde_json::Value,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub overrides_built_in_tool: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub skip_permission: bool,
     // Handler is stored separately in Session since it's not Clone-friendly
+}
+
+fn empty_parameters_schema() -> serde_json::Value {
+    serde_json::json!({})
+}
+
+impl Default for Tool {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            namespaced_name: None,
+            description: String::new(),
+            instructions: None,
+            parameters_schema: empty_parameters_schema(),
+            overrides_built_in_tool: false,
+            skip_permission: false,
+        }
+    }
 }
 
 impl Tool {
@@ -546,22 +686,41 @@ impl Tool {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            description: String::new(),
-            parameters_schema: serde_json::json!({}),
-            overrides_built_in_tool: false,
-            skip_permission: false,
+            ..Default::default()
         }
     }
 
+    /// Set the tool's namespaced name.
+    pub fn with_namespaced_name(mut self, namespaced_name: impl Into<String>) -> Self {
+        self.namespaced_name = Some(namespaced_name.into());
+        self
+    }
+
     /// Set the tool description.
-    pub fn description(mut self, desc: impl Into<String>) -> Self {
-        self.description = desc.into();
+    pub fn description(self, desc: impl Into<String>) -> Self {
+        self.with_description(desc)
+    }
+
+    /// Set the tool description.
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
         self
     }
 
     /// Set the parameters JSON schema.
-    pub fn schema(mut self, schema: serde_json::Value) -> Self {
-        self.parameters_schema = schema;
+    pub fn schema(self, schema: serde_json::Value) -> Self {
+        self.with_parameters(schema)
+    }
+
+    /// Set tool-specific instructions.
+    pub fn with_instructions(mut self, instructions: impl Into<String>) -> Self {
+        self.instructions = Some(instructions.into());
+        self
+    }
+
+    /// Set the parameters JSON schema.
+    pub fn with_parameters(mut self, parameters: serde_json::Value) -> Self {
+        self.parameters_schema = parameters;
         self
     }
 
@@ -617,13 +776,23 @@ impl Tool {
     }
 
     /// Mark this tool as overriding a built-in tool.
-    pub fn overrides_built_in_tool(mut self, value: bool) -> Self {
+    pub fn overrides_built_in_tool(self, value: bool) -> Self {
+        self.with_overrides_built_in_tool(value)
+    }
+
+    /// Mark this tool as overriding a built-in tool.
+    pub fn with_overrides_built_in_tool(mut self, value: bool) -> Self {
         self.overrides_built_in_tool = value;
         self
     }
 
     /// Skip permission checks for this tool.
-    pub fn skip_permission(mut self, value: bool) -> Self {
+    pub fn skip_permission(self, value: bool) -> Self {
+        self.with_skip_permission(value)
+    }
+
+    /// Skip permission checks for this tool.
+    pub fn with_skip_permission(mut self, value: bool) -> Self {
         self.skip_permission = value;
         self
     }
@@ -633,7 +802,9 @@ impl std::fmt::Debug for Tool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Tool")
             .field("name", &self.name)
+            .field("namespaced_name", &self.namespaced_name)
             .field("description", &self.description)
+            .field("instructions", &self.instructions)
             .field("overrides_built_in_tool", &self.overrides_built_in_tool)
             .field("skip_permission", &self.skip_permission)
             .finish()
@@ -648,11 +819,19 @@ impl Serialize for Tool {
     {
         use serde::ser::SerializeStruct;
         let field_count = 3
+            + if self.namespaced_name.is_some() { 1 } else { 0 }
+            + if self.instructions.is_some() { 1 } else { 0 }
             + if self.overrides_built_in_tool { 1 } else { 0 }
             + if self.skip_permission { 1 } else { 0 };
         let mut state = serializer.serialize_struct("Tool", field_count)?;
         state.serialize_field("name", &self.name)?;
+        if let Some(namespaced_name) = &self.namespaced_name {
+            state.serialize_field("namespacedName", namespaced_name)?;
+        }
         state.serialize_field("description", &self.description)?;
+        if let Some(instructions) = &self.instructions {
+            state.serialize_field("instructions", instructions)?;
+        }
         state.serialize_field("parameters", &self.parameters_schema)?;
         if self.overrides_built_in_tool {
             state.serialize_field("overridesBuiltInTool", &self.overrides_built_in_tool)?;
@@ -938,8 +1117,22 @@ pub struct SessionConfig {
     pub skill_directories: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled_skills: Option<Vec<String>>,
+
+    /// Enable session hooks on the wire.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hooks: Option<bool>,
+
+    /// Configures the built-in default agent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_agent: Option<DefaultAgentConfig>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "requestPermission")]
     pub request_permission: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_exit_plan_mode: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_auto_mode_switch: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_elicitation: Option<bool>,
     /// Infinite session configuration for automatic context compaction.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub infinite_sessions: Option<InfiniteSessionConfig>,
@@ -989,7 +1182,7 @@ pub struct SessionConfig {
 
     /// Session hooks for pre/post tool use, session lifecycle, etc.
     #[serde(skip)]
-    pub hooks: Option<SessionHooks>,
+    pub session_hooks: Option<SessionHooks>,
 
     /// If true and provider/model not explicitly set, load from `COPILOT_SDK_BYOK_*` env vars.
     ///
@@ -1057,6 +1250,10 @@ pub struct ResumeSessionConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote_session: Option<RemoteSessionMode>,
 
+    /// Enable session hooks on the wire.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hooks: Option<bool>,
+
     /// If true, skip resuming and create a new session instead.
     #[serde(default, skip_serializing_if = "is_false")]
     pub disable_resume: bool,
@@ -1067,7 +1264,7 @@ pub struct ResumeSessionConfig {
 
     /// Session hooks for pre/post tool use, session lifecycle, etc.
     #[serde(skip)]
-    pub hooks: Option<SessionHooks>,
+    pub session_hooks: Option<SessionHooks>,
 
     /// If true and provider not explicitly set, load from `COPILOT_SDK_BYOK_*` env vars.
     ///
@@ -1810,19 +2007,23 @@ pub struct TelemetryConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
-    fn test_tool_result_text() {
-        let result = ToolResult::text("Hello, world!");
-        assert_eq!(result.text_result_for_llm, "Hello, world!");
-        assert_eq!(result.result_type, "success");
+    fn tool_result_text_variant() {
+        let result = ToolResult::Text("Hello, world!".into());
+        assert_eq!(
+            serde_json::to_value(&result).unwrap(),
+            json!("Hello, world!")
+        );
     }
 
     #[test]
-    fn test_tool_result_error() {
-        let result = ToolResult::error("Something went wrong");
-        assert_eq!(result.result_type, "error");
-        assert_eq!(result.error, Some("Something went wrong".to_string()));
+    fn tool_result_expanded_variant() {
+        let result = ToolResult::Expanded(ToolResultExpanded::text("Something worked"));
+        let value = serde_json::to_value(&result).unwrap();
+        assert_eq!(value["textResultForLlm"], "Something worked");
+        assert_eq!(value["resultType"], "success");
     }
 
     #[test]
@@ -1849,6 +2050,25 @@ mod tests {
         let config = SessionConfig::default();
         assert!(config.model.is_none());
         assert!(config.tools.is_empty());
+    }
+
+    #[test]
+    fn default_agent_config_serializes_excluded_tools() {
+        let config = DefaultAgentConfig::new().with_excluded_tools(["shell", "write"]);
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(value, json!({"excludedTools": ["shell", "write"]}));
+
+        let round_trip: DefaultAgentConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            round_trip.excluded_tools.unwrap(),
+            vec!["shell".to_string(), "write".to_string()]
+        );
+    }
+
+    #[test]
+    fn default_agent_config_omits_when_empty() {
+        let config = DefaultAgentConfig::default();
+        assert_eq!(serde_json::to_value(&config).unwrap(), json!({}));
     }
 
     #[test]
@@ -1894,6 +2114,20 @@ mod tests {
 
         assert_eq!(value["parameters"]["type"], "object");
         assert!(value.get("parametersSchema").is_none());
+    }
+
+    #[test]
+    fn tool_with_namespaced_name_and_instructions() {
+        let tool = Tool::new("search")
+            .with_namespaced_name("local/search")
+            .with_instructions("Use ripgrep")
+            .with_parameters(json!({"type": "object"}));
+
+        let value = serde_json::to_value(&tool).unwrap();
+
+        assert_eq!(value["namespacedName"], "local/search");
+        assert_eq!(value["instructions"], "Use ripgrep");
+        assert_eq!(value["parameters"]["type"], "object");
     }
 
     #[test]
@@ -2006,6 +2240,79 @@ mod tests {
         let j = serde_json::json!("selection");
         let at: AttachmentType = serde_json::from_value(j).unwrap();
         assert_eq!(at, AttachmentType::Selection);
+    }
+
+    #[test]
+    fn delivery_mode_round_trip() {
+        for (mode, wire) in [
+            (DeliveryMode::Enqueue, "enqueue"),
+            (DeliveryMode::Immediate, "immediate"),
+        ] {
+            assert_eq!(serde_json::to_value(mode).unwrap(), json!(wire));
+            assert_eq!(
+                serde_json::from_value::<DeliveryMode>(json!(wire)).unwrap(),
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn github_reference_type_round_trip() {
+        for (reference_type, wire) in [
+            (GitHubReferenceType::Issue, "issue"),
+            (GitHubReferenceType::Pr, "pr"),
+            (GitHubReferenceType::Discussion, "discussion"),
+        ] {
+            assert_eq!(serde_json::to_value(reference_type).unwrap(), json!(wire));
+            assert_eq!(
+                serde_json::from_value::<GitHubReferenceType>(json!(wire)).unwrap(),
+                reference_type
+            );
+        }
+    }
+
+    #[test]
+    fn elicitation_mode_round_trip() {
+        assert_eq!(
+            serde_json::to_value(&ElicitationMode::Form).unwrap(),
+            json!("form")
+        );
+        assert_eq!(
+            serde_json::to_value(&ElicitationMode::Url).unwrap(),
+            json!("url")
+        );
+        assert_eq!(
+            serde_json::from_value::<ElicitationMode>(json!("form")).unwrap(),
+            ElicitationMode::Form
+        );
+        assert_eq!(
+            serde_json::from_value::<ElicitationMode>(json!("url")).unwrap(),
+            ElicitationMode::Url
+        );
+        assert_eq!(
+            serde_json::from_value::<ElicitationMode>(json!("future-mode")).unwrap(),
+            ElicitationMode::Unknown
+        );
+    }
+
+    #[test]
+    fn permission_request_kind_round_trip() {
+        for (kind, wire) in [
+            (PermissionRequestKind::Shell, "shell"),
+            (PermissionRequestKind::CustomTool, "custom-tool"),
+            (PermissionRequestKind::Memory, "memory"),
+        ] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), json!(wire));
+            assert_eq!(
+                serde_json::from_value::<PermissionRequestKind>(json!(wire)).unwrap(),
+                kind
+            );
+        }
+
+        assert_eq!(
+            serde_json::from_value::<PermissionRequestKind>(json!("brand-new-kind")).unwrap(),
+            PermissionRequestKind::Unknown
+        );
     }
 
     #[test]
@@ -2136,15 +2443,16 @@ mod tests {
     #[test]
     fn test_hooks_not_serialized_in_config() {
         let config = SessionConfig {
-            hooks: Some(SessionHooks {
+            session_hooks: Some(SessionHooks {
                 on_pre_tool_use: Some(Arc::new(|_| PreToolUseHookOutput::default())),
                 ..Default::default()
             }),
             ..Default::default()
         };
         let json = serde_json::to_value(&config).unwrap();
-        // hooks field should be skipped from serialization
+        // session_hooks should be skipped from serialization
         assert!(json.get("hooks").is_none());
+        assert!(json.get("sessionHooks").is_none());
     }
 
     #[test]
@@ -2204,6 +2512,30 @@ mod tests {
         let value = serde_json::to_value(&config).unwrap();
         assert_eq!(value["clientName"], "my-app");
         assert_eq!(value["agent"], "code-reviewer");
+    }
+
+    #[test]
+    fn session_config_new_wire_fields() {
+        let config = SessionConfig {
+            request_exit_plan_mode: Some(false),
+            request_auto_mode_switch: Some(true),
+            request_elicitation: Some(true),
+            default_agent: Some(DefaultAgentConfig::new().with_excluded_tools(["shell"])),
+            hooks: Some(true),
+            session_hooks: Some(SessionHooks {
+                on_pre_tool_use: Some(Arc::new(|_| PreToolUseHookOutput::default())),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(value["requestExitPlanMode"], false);
+        assert_eq!(value["requestAutoModeSwitch"], true);
+        assert_eq!(value["requestElicitation"], true);
+        assert_eq!(value["hooks"], true);
+        assert_eq!(value["defaultAgent"]["excludedTools"], json!(["shell"]));
+        assert!(value.get("sessionHooks").is_none());
     }
 
     #[test]

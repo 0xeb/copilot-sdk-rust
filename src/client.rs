@@ -745,6 +745,14 @@ impl Client {
             config.provider = ProviderConfig::from_env();
         }
 
+        if config
+            .session_hooks
+            .as_ref()
+            .is_some_and(|hooks| hooks.has_any())
+        {
+            config.hooks = Some(true);
+        }
+
         // Build the request
         let params = serde_json::to_value(&config)?;
 
@@ -770,7 +778,7 @@ impl Client {
             .await;
 
         // Register hooks from config if provided
-        if let Some(hooks) = config.hooks.take() {
+        if let Some(hooks) = config.session_hooks.take() {
             if hooks.has_any() {
                 session.register_hooks(hooks).await;
             }
@@ -796,6 +804,14 @@ impl Client {
         // Apply BYOK from environment if enabled and not explicitly set
         if config.auto_byok_from_env && config.provider.is_none() {
             config.provider = ProviderConfig::from_env();
+        }
+
+        if config
+            .session_hooks
+            .as_ref()
+            .is_some_and(|hooks| hooks.has_any())
+        {
+            config.hooks = Some(true);
         }
 
         // Build the request
@@ -824,7 +840,7 @@ impl Client {
             .await;
 
         // Register hooks from config if provided
-        if let Some(hooks) = config.hooks.take() {
+        if let Some(hooks) = config.session_hooks.take() {
             if hooks.has_any() {
                 session.register_hooks(hooks).await;
             }

@@ -5,7 +5,7 @@
 
 use copilot_sdk::{
     Client, PermissionRequest, PermissionRequestResult, SessionConfig, SessionEventData, Tool,
-    ToolHandler, ToolResultObject,
+    ToolHandler, ToolResult,
 };
 use std::io::{self, Write};
 use std::sync::Arc;
@@ -40,7 +40,7 @@ async fn main() -> copilot_sdk::Result<()> {
     // Register handlers
     let echo_handler: ToolHandler = Arc::new(|_, args| {
         let msg = args.get("message").and_then(|v| v.as_str()).unwrap_or("");
-        ToolResultObject::text(format!("Echo: {}", msg))
+        ToolResult::text(format!("Echo: {}", msg))
     });
     session
         .register_tool_with_handler(echo_tool, Some(echo_handler))
@@ -48,7 +48,7 @@ async fn main() -> copilot_sdk::Result<()> {
 
     let delete_handler: ToolHandler = Arc::new(|_, args| {
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-        ToolResultObject::text(format!("Would delete: {} (simulated)", path))
+        ToolResult::text(format!("Would delete: {} (simulated)", path))
     });
     session
         .register_tool_with_handler(delete_tool, Some(delete_handler))

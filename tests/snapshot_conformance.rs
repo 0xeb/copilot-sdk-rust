@@ -4,7 +4,7 @@
 #![cfg(feature = "snapshots")]
 
 use copilot_sdk::transport::{MessageReader, MessageWriter};
-use copilot_sdk::{Client, LogLevel, SessionConfig, Tool, ToolHandler, ToolResultObject};
+use copilot_sdk::{Client, LogLevel, SessionConfig, Tool, ToolHandler, ToolResult};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -498,7 +498,7 @@ async fn snapshot_conformance_tools_and_sessions() -> copilot_sdk::Result<()> {
             let handler: ToolHandler = Arc::new(move |_name, args| {
                 let mut guard = captured_handlers.lock().unwrap();
                 guard.push((tool_name.clone(), args.clone()));
-                ToolResultObject::text("OK")
+                ToolResult::text("OK")
             });
 
             session

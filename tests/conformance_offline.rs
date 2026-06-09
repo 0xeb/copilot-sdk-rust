@@ -11,7 +11,7 @@
 //!   pre-existing invariants).
 //! * Per-field `serde_json` shape parity for `SessionConfig`,
 //!   `ResumeSessionConfig`, `SessionListFilter`, `MessageOptions`, and
-//!   `ToolResultObject`.
+//!   `ToolResult`.
 //! * `SessionEvent::from_json` dispatch coverage for v0.1.49 event types not
 //!   already exercised by `tests/v0149_parity.rs` plus the malformed-payload
 //!   fallback path.
@@ -37,7 +37,7 @@ use std::time::Duration;
 use copilot_sdk::{
     rpc_methods, Client, ClientOptions, CopilotError, InvokeFuture, MessageOptions,
     RemoteSessionMode, ResumeSessionConfig, Session, SessionConfig, SessionEvent, SessionEventData,
-    SessionListFilter, Tool, ToolHandler, ToolResultObject,
+    SessionListFilter, Tool, ToolHandler, ToolResult, ToolResultExpanded,
 };
 use serde_json::{json, Value};
 use tokio::sync::Mutex as TokioMutex;
@@ -301,12 +301,12 @@ fn message_options_request_permission_uses_explicit_rename() {
 }
 
 // ---------------------------------------------------------------------------
-// 3. ToolResultObject and MessageOptions wire shape
+// 3. ToolResult and MessageOptions wire shape
 // ---------------------------------------------------------------------------
 
 #[test]
-fn tool_result_object_default_factory_serializes_camel_case() {
-    let res = ToolResultObject::text("hello");
+fn tool_result_expanded_default_factory_serializes_camel_case() {
+    let res = ToolResultExpanded::text("hello");
     let v = serde_json::to_value(&res).unwrap();
     // Both the Rust port and the upstream nodejs SDK use `textResultForLlm`
     // (lowercase `llm`). See `reference/copilot-sdk/nodejs/src/types.ts:241`
@@ -712,7 +712,7 @@ async fn session_register_and_invoke_tool_round_trip() {
 
     let tool = Tool::new("echo").description("Echo arguments");
     let handler: ToolHandler =
-        Arc::new(|_name: &str, args: &Value| ToolResultObject::text(args.to_string()));
+        Arc::new(|_name: &str, args: &Value| ToolResult::text(args.to_string()));
     session
         .register_tool_with_handler(tool, Some(handler))
         .await;
@@ -724,7 +724,7 @@ async fn session_register_and_invoke_tool_round_trip() {
         .invoke_tool("echo", &json!({"x": 1}))
         .await
         .expect("invoke_tool must succeed");
-    assert!(result.text_result_for_llm.contains("\"x\""));
+    assert!(matches!(result, ToolResult::Text(ref text) if text.contains("\"x\"")));
 }
 
 #[tokio::test]
@@ -750,8 +750,7 @@ async fn session_destroy_concurrent_with_tool_invocation_no_panic() {
     let (log, invoke) = recording_invoke_fn();
     let session = Arc::new(Session::new("sess-concurrent".into(), None, invoke));
 
-    let handler: ToolHandler =
-        Arc::new(|_name: &str, _args: &Value| ToolResultObject::text("done"));
+    let handler: ToolHandler = Arc::new(|_name: &str, _args: &Value| ToolResult::text("done"));
     session
         .register_tool_with_handler(Tool::new("slow"), Some(handler))
         .await;
