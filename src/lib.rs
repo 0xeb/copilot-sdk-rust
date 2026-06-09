@@ -59,6 +59,7 @@ pub use types::{
     AgentInfo,
     // Enums
     AttachmentType,
+    AutoModeSwitchResponse,
     AzureOptions,
     ClientOptions,
     ConnectionState,
@@ -66,10 +67,14 @@ pub use types::{
     DefaultAgentConfig,
     DeliveryMode,
     ElicitationMode,
+    ElicitationRequest,
+    ElicitationResult,
     // Hook types
     ErrorOccurredHandler,
     ErrorOccurredHookInput,
     ErrorOccurredHookOutput,
+    ExitPlanModeData,
+    ExitPlanModeResult,
     FleetStartOptions,
     // Response types
     GetAuthStatusResponse,
@@ -297,8 +302,9 @@ pub use process::{
 
 // Re-export session types
 pub use session::{
-    EventHandler, EventSubscription, InvokeFuture, PermissionHandler, RegisteredTool, Session,
-    ToolHandler, UserInputHandler,
+    AutoModeSwitchHandler, ElicitationHandler, EventHandler, EventSubscription,
+    ExitPlanModeHandler, InvokeFuture, PermissionHandler, RegisteredTool, Session, ToolHandler,
+    UserInputHandler,
 };
 
 // Re-export client types

@@ -4,6 +4,7 @@
 //! Core types for the Copilot SDK.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1722,6 +1723,112 @@ pub struct UserInputInvocation {
     pub session_id: String,
 }
 
+/// Context for an elicitation request from the server.
+///
+/// Received via `elicitation.request` or `elicitation.requested` when the session
+/// was created with `request_elicitation: true`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElicitationRequest {
+    /// Message describing what information is needed from the user.
+    pub message: String,
+    /// JSON Schema describing the form fields to present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested_schema: Option<Value>,
+    /// Elicitation display mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ElicitationMode>,
+    /// The source that initiated the request (e.g. MCP server name).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elicitation_source: Option<String>,
+    /// URL to open in the user's browser (url mode only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+/// Result returned from an elicitation dialog.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElicitationResult {
+    /// User's action: `"accept"`, `"decline"`, or `"cancel"`.
+    pub action: String,
+    /// Form data submitted by the user (present when action is `"accept"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<Value>,
+}
+
+/// Data sent by the CLI with an `exitPlanMode.request` RPC call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExitPlanModeData {
+    /// Markdown summary of the plan presented to the user.
+    #[serde(default)]
+    pub summary: String,
+    /// Full plan content, if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_content: Option<String>,
+    /// Allowed exit actions.
+    #[serde(default)]
+    pub actions: Vec<String>,
+    /// Which action the CLI recommends.
+    #[serde(default = "default_recommended_action")]
+    pub recommended_action: String,
+}
+
+fn default_recommended_action() -> String {
+    "autopilot".to_string()
+}
+
+impl Default for ExitPlanModeData {
+    fn default() -> Self {
+        Self {
+            summary: String::new(),
+            plan_content: None,
+            actions: Vec::new(),
+            recommended_action: default_recommended_action(),
+        }
+    }
+}
+
+/// Result of an exit-plan-mode request.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExitPlanModeResult {
+    /// Whether the user approved exiting plan mode.
+    pub approved: bool,
+    /// The action the user selected (if any).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_action: Option<String>,
+    /// Optional feedback text from the user.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feedback: Option<String>,
+}
+
+impl Default for ExitPlanModeResult {
+    fn default() -> Self {
+        Self {
+            approved: true,
+            selected_action: None,
+            feedback: None,
+        }
+    }
+}
+
+/// Response to an auto-mode-switch request.
+///
+/// Wire serialization: `"yes"`, `"yes_always"`, or `"no"`.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoModeSwitchResponse {
+    /// Approve the auto-mode switch for this rate-limit cycle only.
+    Yes,
+    /// Approve and remember for this session.
+    YesAlways,
+    /// Decline the switch.
+    No,
+}
+
 // =============================================================================
 // Session Lifecycle Types
 // =============================================================================
@@ -2170,6 +2277,134 @@ mod tests {
     }
 
     #[test]
+    fn elicitation_request_round_trip_all_fields() {
+        let request = ElicitationRequest {
+            message: "Tell us more".into(),
+            requested_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "email": { "type": "string", "format": "email" }
+                },
+                "required": ["email"]
+            })),
+            mode: Some(ElicitationMode::Url),
+            elicitation_source: Some("mcp-server".into()),
+            url: Some("https://example.test/form".into()),
+        };
+
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["message"], "Tell us more");
+        assert_eq!(value["requestedSchema"]["type"], "object");
+        assert_eq!(value["mode"], "url");
+        assert_eq!(value["elicitationSource"], "mcp-server");
+        assert_eq!(value["url"], "https://example.test/form");
+
+        let round_trip: ElicitationRequest = serde_json::from_value(value).unwrap();
+        assert_eq!(round_trip.message, "Tell us more");
+        assert_eq!(
+            round_trip.requested_schema.unwrap()["required"],
+            json!(["email"])
+        );
+        assert!(matches!(round_trip.mode, Some(ElicitationMode::Url)));
+        assert_eq!(round_trip.elicitation_source.as_deref(), Some("mcp-server"));
+        assert_eq!(round_trip.url.as_deref(), Some("https://example.test/form"));
+    }
+
+    #[test]
+    fn elicitation_result_round_trip_accept_and_cancel() {
+        let accept = ElicitationResult {
+            action: "accept".into(),
+            content: Some(json!({"email": "user@example.test"})),
+        };
+        let accept_value = serde_json::to_value(&accept).unwrap();
+        assert_eq!(accept_value["action"], "accept");
+        assert_eq!(accept_value["content"]["email"], "user@example.test");
+
+        let accept_round_trip: ElicitationResult = serde_json::from_value(accept_value).unwrap();
+        assert_eq!(accept_round_trip.action, "accept");
+        assert_eq!(
+            accept_round_trip.content.unwrap()["email"],
+            "user@example.test"
+        );
+
+        let cancel = ElicitationResult {
+            action: "cancel".into(),
+            content: None,
+        };
+        let cancel_value = serde_json::to_value(&cancel).unwrap();
+        assert_eq!(cancel_value["action"], "cancel");
+        assert!(cancel_value.get("content").is_none());
+
+        let cancel_round_trip: ElicitationResult = serde_json::from_value(cancel_value).unwrap();
+        assert_eq!(cancel_round_trip.action, "cancel");
+        assert!(cancel_round_trip.content.is_none());
+    }
+
+    #[test]
+    fn exit_plan_mode_data_round_trip_and_default() {
+        let data = ExitPlanModeData {
+            summary: "Need approval to leave plan mode".into(),
+            plan_content: Some("## Plan\n1. Do it".into()),
+            actions: vec!["autopilot".into(), "chat".into()],
+            recommended_action: "chat".into(),
+        };
+
+        let value = serde_json::to_value(&data).unwrap();
+        assert_eq!(value["summary"], "Need approval to leave plan mode");
+        assert_eq!(value["planContent"], "## Plan\n1. Do it");
+        assert_eq!(value["actions"], json!(["autopilot", "chat"]));
+        assert_eq!(value["recommendedAction"], "chat");
+
+        let round_trip: ExitPlanModeData = serde_json::from_value(value).unwrap();
+        assert_eq!(round_trip.summary, "Need approval to leave plan mode");
+        assert_eq!(
+            round_trip.plan_content.as_deref(),
+            Some("## Plan\n1. Do it")
+        );
+        assert_eq!(round_trip.actions, vec!["autopilot", "chat"]);
+        assert_eq!(round_trip.recommended_action, "chat");
+
+        let default_value = serde_json::to_value(ExitPlanModeData::default()).unwrap();
+        assert_eq!(default_value["summary"], "");
+        assert_eq!(default_value["actions"], json!([]));
+        assert_eq!(default_value["recommendedAction"], "autopilot");
+        assert!(default_value.get("planContent").is_none());
+    }
+
+    #[test]
+    fn exit_plan_mode_result_serializes_custom_and_default() {
+        let approved = ExitPlanModeResult {
+            approved: false,
+            selected_action: Some("chat".into()),
+            feedback: Some("Need another revision".into()),
+        };
+        let approved_value = serde_json::to_value(&approved).unwrap();
+        assert_eq!(approved_value["approved"], false);
+        assert_eq!(approved_value["selectedAction"], "chat");
+        assert_eq!(approved_value["feedback"], "Need another revision");
+
+        let default_value = serde_json::to_value(ExitPlanModeResult::default()).unwrap();
+        assert_eq!(default_value["approved"], true);
+        assert!(default_value.get("selectedAction").is_none());
+        assert!(default_value.get("feedback").is_none());
+    }
+
+    #[test]
+    fn auto_mode_switch_response_serializes_all_variants() {
+        for (response, wire) in [
+            (AutoModeSwitchResponse::Yes, "yes"),
+            (AutoModeSwitchResponse::YesAlways, "yes_always"),
+            (AutoModeSwitchResponse::No, "no"),
+        ] {
+            assert_eq!(serde_json::to_value(response).unwrap(), json!(wire));
+            assert_eq!(
+                serde_json::from_value::<AutoModeSwitchResponse>(json!(wire)).unwrap(),
+                response
+            );
+        }
+    }
+
+    #[test]
     fn test_session_lifecycle_event_from_json() {
         let j = serde_json::json!({
             "type": "session.created",
@@ -2299,8 +2534,13 @@ mod tests {
     fn permission_request_kind_round_trip() {
         for (kind, wire) in [
             (PermissionRequestKind::Shell, "shell"),
+            (PermissionRequestKind::Write, "write"),
+            (PermissionRequestKind::Read, "read"),
+            (PermissionRequestKind::Url, "url"),
+            (PermissionRequestKind::Mcp, "mcp"),
             (PermissionRequestKind::CustomTool, "custom-tool"),
             (PermissionRequestKind::Memory, "memory"),
+            (PermissionRequestKind::Hook, "hook"),
         ] {
             assert_eq!(serde_json::to_value(kind).unwrap(), json!(wire));
             assert_eq!(
@@ -2453,6 +2693,23 @@ mod tests {
         // session_hooks should be skipped from serialization
         assert!(json.get("hooks").is_none());
         assert!(json.get("sessionHooks").is_none());
+    }
+
+    #[test]
+    fn session_config_hooks_bool_serializes_but_session_hooks_stays_skipped() {
+        let config = SessionConfig {
+            hooks: Some(true),
+            session_hooks: Some(SessionHooks {
+                on_pre_tool_use: Some(Arc::new(|_| PreToolUseHookOutput::default())),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(value["hooks"], true);
+        assert!(value.get("sessionHooks").is_none());
+        assert!(value.get("session_hooks").is_none());
     }
 
     #[test]

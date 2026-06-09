@@ -12,11 +12,11 @@ use crate::process::{CopilotProcess, ProcessOptions};
 use crate::rpc_methods;
 use crate::session::Session;
 use crate::types::{
-    ClientOptions, ConnectionState, GetAuthStatusResponse, GetForegroundSessionResponse,
-    GetStatusResponse, LogLevel, ModelInfo, PingResponse, ProviderConfig, QuotaResult,
-    ResumeSessionConfig, SessionConfig, SessionLifecycleEvent, SessionListFilter, SessionMetadata,
-    SetForegroundSessionResponse, StopError, TelemetryConfig, ToolsListResult,
-    MIN_PROTOCOL_VERSION, SDK_PROTOCOL_VERSION,
+    ClientOptions, ConnectionState, ElicitationRequest, ExitPlanModeData, GetAuthStatusResponse,
+    GetForegroundSessionResponse, GetStatusResponse, LogLevel, ModelInfo, PingResponse,
+    ProviderConfig, QuotaResult, ResumeSessionConfig, SessionConfig, SessionLifecycleEvent,
+    SessionListFilter, SessionMetadata, SetForegroundSessionResponse, StopError, TelemetryConfig,
+    ToolsListResult, MIN_PROTOCOL_VERSION, SDK_PROTOCOL_VERSION,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -336,6 +336,74 @@ async fn handle_user_input_request(
 
     let response = session.handle_user_input_request(&request).await?;
     Ok(serde_json::to_value(response).unwrap_or(json!({})))
+}
+
+async fn handle_elicitation_request(
+    sessions: &RwLock<HashMap<String, Arc<Session>>>,
+    params: &Value,
+) -> Result<Value> {
+    let session_id = params["sessionId"]
+        .as_str()
+        .ok_or_else(|| CopilotError::Protocol("Missing sessionId".into()))?;
+
+    let session = sessions
+        .read()
+        .await
+        .get(session_id)
+        .cloned()
+        .ok_or_else(|| CopilotError::Protocol(format!("Unknown session {}", session_id)))?;
+
+    let request: ElicitationRequest = serde_json::from_value(params.clone())
+        .map_err(|e| CopilotError::Protocol(format!("Invalid elicitation request: {}", e)))?;
+
+    let result = session.handle_elicitation_request(&request).await;
+    Ok(serde_json::to_value(result).unwrap_or(Value::Null))
+}
+
+async fn handle_exit_plan_mode_request(
+    sessions: &RwLock<HashMap<String, Arc<Session>>>,
+    params: &Value,
+) -> Result<Value> {
+    let session_id = params["sessionId"]
+        .as_str()
+        .ok_or_else(|| CopilotError::Protocol("Missing sessionId".into()))?;
+
+    let session = sessions
+        .read()
+        .await
+        .get(session_id)
+        .cloned()
+        .ok_or_else(|| CopilotError::Protocol(format!("Unknown session {}", session_id)))?;
+
+    let data: ExitPlanModeData = serde_json::from_value(params.clone())
+        .map_err(|e| CopilotError::Protocol(format!("Invalid exit plan mode request: {}", e)))?;
+
+    let result = session.handle_exit_plan_mode_request(&data).await;
+    Ok(serde_json::to_value(result).unwrap_or(Value::Null))
+}
+
+async fn handle_auto_mode_switch_request(
+    sessions: &RwLock<HashMap<String, Arc<Session>>>,
+    params: &Value,
+) -> Result<Value> {
+    let session_id = params["sessionId"]
+        .as_str()
+        .ok_or_else(|| CopilotError::Protocol("Missing sessionId".into()))?;
+
+    let session = sessions
+        .read()
+        .await
+        .get(session_id)
+        .cloned()
+        .ok_or_else(|| CopilotError::Protocol(format!("Unknown session {}", session_id)))?;
+
+    let error_code = params.get("errorCode").and_then(Value::as_str);
+    let retry_after_seconds = params.get("retryAfterSeconds").and_then(Value::as_f64);
+
+    let result = session
+        .handle_auto_mode_switch_request(error_code, retry_after_seconds)
+        .await;
+    Ok(serde_json::to_value(result).unwrap_or(Value::Null))
 }
 
 async fn handle_hooks_invoke(
@@ -1487,6 +1555,13 @@ impl Client {
                     "tool.call" => handle_tool_call(&sessions, &params).await,
                     "permission.request" => handle_permission_request(&sessions, &params).await,
                     "userInput.request" => handle_user_input_request(&sessions, &params).await,
+                    "elicitation.request" => handle_elicitation_request(&sessions, &params).await,
+                    "exitPlanMode.request" => {
+                        handle_exit_plan_mode_request(&sessions, &params).await
+                    }
+                    "autoModeSwitch.request" => {
+                        handle_auto_mode_switch_request(&sessions, &params).await
+                    }
                     "hooks.invoke" => handle_hooks_invoke(&sessions, &params).await,
                     _ => {
                         return Err(JsonRpcError::new(
@@ -1941,6 +2016,109 @@ mod tests {
             "arguments": "{not valid json"
         });
         assert_eq!(normalize_tool_arguments(&params), json!({}));
+    }
+
+    #[tokio::test]
+    async fn test_handle_elicitation_request_dispatch() {
+        let session = Arc::new(Session::new("sess-eli".into(), None, |_method, _params| {
+            Box::pin(async { Ok(Value::Null) })
+        }));
+        session
+            .register_elicitation_handler(|request| crate::types::ElicitationResult {
+                action: "accept".into(),
+                content: Some(json!({"message": request.message})),
+            })
+            .await;
+
+        let sessions = RwLock::new(HashMap::from([(
+            "sess-eli".to_string(),
+            Arc::clone(&session),
+        )]));
+        let result = handle_elicitation_request(
+            &sessions,
+            &json!({
+                "sessionId": "sess-eli",
+                "message": "Need input",
+                "requestedSchema": {"type": "object"},
+                "mode": "form",
+                "elicitationSource": "mcp"
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result["action"], "accept");
+        assert_eq!(result["content"]["message"], "Need input");
+    }
+
+    #[tokio::test]
+    async fn test_handle_exit_plan_mode_request_dispatch() {
+        let session = Arc::new(Session::new(
+            "sess-exit".into(),
+            None,
+            |_method, _params| Box::pin(async { Ok(Value::Null) }),
+        ));
+        session
+            .register_exit_plan_mode_handler(|data| crate::types::ExitPlanModeResult {
+                approved: false,
+                selected_action: Some(data.recommended_action.clone()),
+                feedback: Some(data.summary.clone()),
+            })
+            .await;
+
+        let sessions = RwLock::new(HashMap::from([(
+            "sess-exit".to_string(),
+            Arc::clone(&session),
+        )]));
+        let result = handle_exit_plan_mode_request(
+            &sessions,
+            &json!({
+                "sessionId": "sess-exit",
+                "summary": "Review plan",
+                "planContent": "# Plan",
+                "actions": ["autopilot", "chat"],
+                "recommendedAction": "chat"
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result["approved"], false);
+        assert_eq!(result["selectedAction"], "chat");
+        assert_eq!(result["feedback"], "Review plan");
+    }
+
+    #[tokio::test]
+    async fn test_handle_auto_mode_switch_request_dispatch() {
+        let session = Arc::new(Session::new(
+            "sess-auto".into(),
+            None,
+            |_method, _params| Box::pin(async { Ok(Value::Null) }),
+        ));
+        session
+            .register_auto_mode_switch_handler(|error_code, retry_after_seconds| {
+                assert_eq!(error_code, Some("rate_limited"));
+                assert_eq!(retry_after_seconds, Some(12.5));
+                crate::types::AutoModeSwitchResponse::YesAlways
+            })
+            .await;
+
+        let sessions = RwLock::new(HashMap::from([(
+            "sess-auto".to_string(),
+            Arc::clone(&session),
+        )]));
+        let result = handle_auto_mode_switch_request(
+            &sessions,
+            &json!({
+                "sessionId": "sess-auto",
+                "errorCode": "rate_limited",
+                "retryAfterSeconds": 12.5
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result, json!("yes_always"));
     }
 
     // =========================================================================

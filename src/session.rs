@@ -9,12 +9,13 @@ use crate::error::{CopilotError, Result};
 use crate::events::{SessionEvent, SessionEventData};
 use crate::rpc_methods;
 use crate::types::{
-    AgentInfo, ErrorOccurredHookInput, FleetStartOptions, LogOptions, LogResult, MessageOptions,
-    PermissionRequest, PermissionRequestResult, PlanData, PostToolUseHookInput,
-    PreToolUseHookInput, SessionEndHookInput, SessionHooks, SessionMode, SessionStartHookInput,
-    SetModelOptions, ShellExecOptions, ShellExecResult, ShellSignal, Tool, ToolResult,
-    UserInputInvocation, UserInputRequest, UserInputResponse, UserPromptSubmittedHookInput,
-    WorkspaceFile,
+    AgentInfo, AutoModeSwitchResponse, ElicitationRequest, ElicitationResult,
+    ErrorOccurredHookInput, ExitPlanModeData, ExitPlanModeResult, FleetStartOptions, LogOptions,
+    LogResult, MessageOptions, PermissionRequest, PermissionRequestResult, PlanData,
+    PostToolUseHookInput, PreToolUseHookInput, SessionEndHookInput, SessionHooks, SessionMode,
+    SessionStartHookInput, SetModelOptions, ShellExecOptions, ShellExecResult, ShellSignal, Tool,
+    ToolResult, UserInputInvocation, UserInputRequest, UserInputResponse,
+    UserPromptSubmittedHookInput, WorkspaceFile,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -40,6 +41,16 @@ pub type ToolHandler = Arc<dyn Fn(&str, &Value) -> ToolResult + Send + Sync>;
 /// Handler for user input requests.
 pub type UserInputHandler =
     Arc<dyn Fn(&UserInputRequest, &UserInputInvocation) -> UserInputResponse + Send + Sync>;
+
+/// Handler for elicitation requests.
+pub type ElicitationHandler = Arc<dyn Fn(&ElicitationRequest) -> ElicitationResult + Send + Sync>;
+
+/// Handler for exit-plan-mode requests.
+pub type ExitPlanModeHandler = Arc<dyn Fn(&ExitPlanModeData) -> ExitPlanModeResult + Send + Sync>;
+
+/// Handler for auto-mode-switch requests.
+pub type AutoModeSwitchHandler =
+    Arc<dyn Fn(Option<&str>, Option<f64>) -> AutoModeSwitchResponse + Send + Sync>;
 
 /// Type alias for the invoke future.
 pub type InvokeFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send>>;
@@ -89,6 +100,12 @@ struct SessionState {
     permission_handler: Option<PermissionHandler>,
     /// User input handler.
     user_input_handler: Option<UserInputHandler>,
+    /// Elicitation handler.
+    elicitation_handler: Option<ElicitationHandler>,
+    /// Exit plan mode handler.
+    exit_plan_mode_handler: Option<ExitPlanModeHandler>,
+    /// Auto mode switch handler.
+    auto_mode_switch_handler: Option<AutoModeSwitchHandler>,
     /// Session hooks.
     hooks: Option<SessionHooks>,
     /// Callback-based event handlers.
@@ -161,6 +178,9 @@ impl Session {
                 tools: HashMap::new(),
                 permission_handler: None,
                 user_input_handler: None,
+                elicitation_handler: None,
+                exit_plan_mode_handler: None,
+                auto_mode_switch_handler: None,
                 hooks: None,
                 event_handlers: HashMap::new(),
                 next_handler_id: AtomicU64::new(1),
@@ -560,6 +580,88 @@ impl Session {
             Err(CopilotError::Protocol(
                 "No user input handler registered".into(),
             ))
+        }
+    }
+
+    // =========================================================================
+    // Elicitation Handling
+    // =========================================================================
+
+    /// Register a handler for elicitation requests.
+    pub async fn register_elicitation_handler<F>(&self, handler: F)
+    where
+        F: Fn(&ElicitationRequest) -> ElicitationResult + Send + Sync + 'static,
+    {
+        let mut state = self.state.write().await;
+        state.elicitation_handler = Some(Arc::new(handler));
+    }
+
+    /// Handle an elicitation request.
+    pub async fn handle_elicitation_request(
+        &self,
+        request: &ElicitationRequest,
+    ) -> ElicitationResult {
+        let state = self.state.read().await;
+        if let Some(handler) = &state.elicitation_handler {
+            handler(request)
+        } else {
+            ElicitationResult {
+                action: "cancel".to_string(),
+                content: None,
+            }
+        }
+    }
+
+    // =========================================================================
+    // Exit Plan Mode Handling
+    // =========================================================================
+
+    /// Register a handler for exit-plan-mode requests.
+    pub async fn register_exit_plan_mode_handler<F>(&self, handler: F)
+    where
+        F: Fn(&ExitPlanModeData) -> ExitPlanModeResult + Send + Sync + 'static,
+    {
+        let mut state = self.state.write().await;
+        state.exit_plan_mode_handler = Some(Arc::new(handler));
+    }
+
+    /// Handle an exit-plan-mode request.
+    pub async fn handle_exit_plan_mode_request(
+        &self,
+        data: &ExitPlanModeData,
+    ) -> ExitPlanModeResult {
+        let state = self.state.read().await;
+        if let Some(handler) = &state.exit_plan_mode_handler {
+            handler(data)
+        } else {
+            ExitPlanModeResult::default()
+        }
+    }
+
+    // =========================================================================
+    // Auto Mode Switch Handling
+    // =========================================================================
+
+    /// Register a handler for auto-mode-switch requests.
+    pub async fn register_auto_mode_switch_handler<F>(&self, handler: F)
+    where
+        F: Fn(Option<&str>, Option<f64>) -> AutoModeSwitchResponse + Send + Sync + 'static,
+    {
+        let mut state = self.state.write().await;
+        state.auto_mode_switch_handler = Some(Arc::new(handler));
+    }
+
+    /// Handle an auto-mode-switch request.
+    pub async fn handle_auto_mode_switch_request(
+        &self,
+        error_code: Option<&str>,
+        retry_after_seconds: Option<f64>,
+    ) -> AutoModeSwitchResponse {
+        let state = self.state.read().await;
+        if let Some(handler) = &state.auto_mode_switch_handler {
+            handler(error_code, retry_after_seconds)
+        } else {
+            AutoModeSwitchResponse::No
         }
     }
 
@@ -1405,6 +1507,97 @@ mod tests {
 
         let result = session.handle_user_input_request(&request).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_callback_handlers_default_and_registered() {
+        let session = Session::new("test".to_string(), None, mock_invoke);
+
+        let default_elicitation = session
+            .handle_elicitation_request(&ElicitationRequest {
+                message: "Provide details".into(),
+                requested_schema: None,
+                mode: Some(crate::types::ElicitationMode::Form),
+                elicitation_source: None,
+                url: None,
+            })
+            .await;
+        assert_eq!(default_elicitation.action, "cancel");
+        assert!(default_elicitation.content.is_none());
+
+        let default_exit = session
+            .handle_exit_plan_mode_request(&ExitPlanModeData {
+                summary: "summary".into(),
+                plan_content: None,
+                actions: vec!["autopilot".into()],
+                recommended_action: "autopilot".into(),
+            })
+            .await;
+        assert!(default_exit.approved);
+        assert!(default_exit.selected_action.is_none());
+        assert!(default_exit.feedback.is_none());
+
+        assert_eq!(
+            session
+                .handle_auto_mode_switch_request(Some("rate_limited"), Some(30.0))
+                .await,
+            AutoModeSwitchResponse::No
+        );
+
+        session
+            .register_elicitation_handler(|request| ElicitationResult {
+                action: "accept".into(),
+                content: Some(serde_json::json!({
+                    "message": request.message,
+                    "mode": request.mode.as_ref().map(|mode| serde_json::to_value(mode).unwrap()),
+                })),
+            })
+            .await;
+        session
+            .register_exit_plan_mode_handler(|data| ExitPlanModeResult {
+                approved: false,
+                selected_action: Some(data.recommended_action.clone()),
+                feedback: Some(data.summary.clone()),
+            })
+            .await;
+        session
+            .register_auto_mode_switch_handler(|error_code, retry_after_seconds| {
+                assert_eq!(error_code, Some("rate_limited"));
+                assert_eq!(retry_after_seconds, Some(45.0));
+                AutoModeSwitchResponse::YesAlways
+            })
+            .await;
+
+        let elicitation = session
+            .handle_elicitation_request(&ElicitationRequest {
+                message: "Provide details".into(),
+                requested_schema: Some(serde_json::json!({"type": "object"})),
+                mode: Some(crate::types::ElicitationMode::Form),
+                elicitation_source: Some("mcp".into()),
+                url: None,
+            })
+            .await;
+        assert_eq!(elicitation.action, "accept");
+        assert_eq!(elicitation.content.unwrap()["message"], "Provide details");
+
+        let exit = session
+            .handle_exit_plan_mode_request(&ExitPlanModeData {
+                summary: "Need confirmation".into(),
+                plan_content: Some("# Plan".into()),
+                actions: vec!["chat".into(), "autopilot".into()],
+                recommended_action: "chat".into(),
+            })
+            .await;
+        assert!(!exit.approved);
+        assert_eq!(exit.selected_action.as_deref(), Some("chat"));
+        assert_eq!(exit.feedback.as_deref(), Some("Need confirmation"));
+
+        assert_eq!(
+            session
+                .handle_auto_mode_switch_request(Some("rate_limited"), Some(45.0))
+                .await,
+            AutoModeSwitchResponse::YesAlways
+        );
     }
 
     #[tokio::test]
